@@ -13,6 +13,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -34,6 +35,8 @@ import com.samvaad.android.enroll.EnrollmentCoordinator
 import com.samvaad.android.enroll.FailKind
 import com.samvaad.android.enroll.FileDeviceMetadataStore
 import com.samvaad.android.enroll.HttpE2eeDeviceApi
+import com.samvaad.android.session.SessionRefresher
+import com.samvaad.android.session.SessionStore
 import com.samvaad.android.ui.theme.SamvaadTheme
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.launch
@@ -76,6 +79,13 @@ fun HomeScreen(
     // Test seam: production passes null and gets the real coordinator.
     // Kept as an explicit nullable parameter (no DI framework).
     coordinator: EnrollmentCoordinator? = null,
+    authApi: AuthApi = HttpAuthApi(),
+    /**
+     * Session durability + logout wiring. Null in previews and legacy
+     * tests: logout then only leaves the screen, with nothing to wipe.
+     */
+    sessionStore: SessionStore? = null,
+    onLogout: () -> Unit = {},
 ) {
     val context = LocalContext.current.applicationContext
     // Explicit construction (no DI): one coordinator per composition.
@@ -105,7 +115,26 @@ fun HomeScreen(
         )
     }
     val submitting = remember { AtomicBoolean(false) }
+    val loggingOut = remember { AtomicBoolean(false) }
     val scope = rememberCoroutineScope()
+
+    /**
+     * First and only logout affordance. Revokes server-side best-effort,
+     * then wipes the persisted session unconditionally — including when
+     * offline. Device metadata, vault records, and the wrapping key are
+     * never touched here (see SessionRefresher.logout).
+     */
+    fun doLogout() {
+        if (!loggingOut.compareAndSet(false, true)) return
+        scope.launch {
+            try {
+                sessionStore?.let { SessionRefresher(authApi, it).logout(serverAddress, session) }
+            } finally {
+                loggingOut.set(false)
+                onLogout()
+            }
+        }
+    }
 
     fun startBootstrap() {
         if (!submitting.compareAndSet(false, true)) return
@@ -228,6 +257,9 @@ fun HomeScreen(
                     )
                 }
                 is EnrollUiState.Codes -> Unit // handled above
+            }
+            TextButton(onClick = ::doLogout) {
+                Text("Log out")
             }
         }
     }

@@ -33,7 +33,8 @@ object RecordEnvelopeCodec {
 
     data class ParsedEnvelope(
         val version: Int,
-        val kind: CryptoRecordKind,
+        val kindCode: Byte,
+        val kind: CryptoRecordKind?,
         val handleId: UUID,
         val iv: ByteArray,
         val ciphertext: ByteArray,
@@ -45,14 +46,28 @@ object RecordEnvelopeCodec {
         kind: CryptoRecordKind,
         handleId: UUID,
         recordBytes: ByteArray,
+    ): ByteArray = seal(key, kind.code, handleId, recordBytes)
+
+    /**
+     * Byte-oriented seal for non-crypto namespaces (e.g. the session
+     * store). Same layout, AAD, and IV discipline as the record variant;
+     * the kind byte only needs to be distinct from [CryptoRecordKind] codes
+     * used in the same directory — session envelopes live in their own
+     * directory and are never mixed with record envelopes.
+     */
+    fun seal(
+        key: SecretKey,
+        kindCode: Byte,
+        handleId: UUID,
+        recordBytes: ByteArray,
     ): ByteArray {
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         cipher.init(Cipher.ENCRYPT_MODE, key)
         val iv = cipher.iv
         require(iv.isNotEmpty()) { "platform Cipher produced no GCM IV" }
-        cipher.updateAAD(aad(kind, handleId))
+        cipher.updateAAD(aad(kindCode, handleId))
         val ciphertext = cipher.doFinal(recordBytes)
-        return buildEnvelope(kind, handleId, iv, ciphertext)
+        return buildEnvelope(kindCode, handleId, iv, ciphertext)
     }
 
     /**
@@ -67,12 +82,20 @@ object RecordEnvelopeCodec {
         kind: CryptoRecordKind,
         handleId: UUID,
         envelope: ByteArray,
+    ): ByteArray = unseal(key, kind.code, handleId, envelope)
+
+    /** Byte-oriented unseal; same contract as the record variant. */
+    fun unseal(
+        key: SecretKey,
+        kindCode: Byte,
+        handleId: UUID,
+        envelope: ByteArray,
     ): ByteArray {
         val parsed = parse(envelope)
         if (parsed.version != CURRENT_VERSION) {
             throw VaultException.UnknownVersion(parsed.version)
         }
-        if (parsed.kind != kind || parsed.handleId != handleId) {
+        if (parsed.kindCode != kindCode || parsed.handleId != handleId) {
             throw VaultException.HandleMismatch()
         }
         try {
@@ -82,7 +105,7 @@ object RecordEnvelopeCodec {
                 key,
                 GCMParameterSpec(GCM_TAG_BITS, parsed.iv),
             )
-            cipher.updateAAD(aad(kind, handleId))
+            cipher.updateAAD(aad(kindCode, handleId))
             return cipher.doFinal(parsed.ciphertext)
         } catch (e: GeneralSecurityException) {
             throw VaultException.CorruptEnvelope()
@@ -96,10 +119,10 @@ object RecordEnvelopeCodec {
      * recovery always goes through [unseal].
      *
      * @throws VaultException.CorruptEnvelope on truncation/bad magic/IV
-     * @throws VaultException.UnknownVersion handled by caller ([unseal]
-     * converts post-parse; parse itself surfaces only structural failure —
-     * unknown *kind codes* are corrupt, unknown *versions* pass through
-     * with their version number for the caller to reject explicitly)
+     * or empty ciphertext. Unknown versions pass through with their version
+     * number for the caller to reject explicitly; kind codes outside the
+     * crypto set resolve to a null [ParsedEnvelope.kind] and are rejected
+     * by the kind-code comparison in [unseal].
      */
     fun parse(envelope: ByteArray): ParsedEnvelope {
         val minSize = MAGIC.size + 1 + 1 + 16 + 1
@@ -119,15 +142,15 @@ object RecordEnvelopeCodec {
         val ciphertext = ByteArray(buf.remaining())
         buf.get(ciphertext)
         if (ciphertext.isEmpty()) throw VaultException.CorruptEnvelope()
-        // Kind codes outside the known set are structural corruption; the
-        // version gate stays the caller's explicit decision.
+        // Kind codes outside the crypto set are structurally corrupt for
+        // record envelopes; byte-oriented callers (session namespace) match
+        // on the raw code instead and never consult [CryptoRecordKind].
         val kind = CryptoRecordKind.fromCode(kindCode)
-            ?: throw VaultException.CorruptEnvelope()
-        return ParsedEnvelope(version, kind, UUID(msb, lsb), iv, ciphertext)
+        return ParsedEnvelope(version, kindCode, kind, UUID(msb, lsb), iv, ciphertext)
     }
 
     private fun buildEnvelope(
-        kind: CryptoRecordKind,
+        kindCode: Byte,
         handleId: UUID,
         iv: ByteArray,
         ciphertext: ByteArray,
@@ -138,7 +161,7 @@ object RecordEnvelopeCodec {
         )
         buf.put(MAGIC)
         buf.put(CURRENT_VERSION.toByte())
-        buf.put(kind.code)
+        buf.put(kindCode)
         buf.putLong(handleId.mostSignificantBits)
         buf.putLong(handleId.leastSignificantBits)
         buf.put(iv.size.toByte())
@@ -147,11 +170,14 @@ object RecordEnvelopeCodec {
         return buf.array()
     }
 
-    private fun aad(kind: CryptoRecordKind, handleId: UUID): ByteArray {
+    private fun aad(kind: CryptoRecordKind, handleId: UUID): ByteArray =
+        aad(kind.code, handleId)
+
+    private fun aad(kindCode: Byte, handleId: UUID): ByteArray {
         val buf = ByteBuffer.allocate(MAGIC.size + 1 + 1 + 16)
         buf.put(MAGIC)
         buf.put(CURRENT_VERSION.toByte())
-        buf.put(kind.code)
+        buf.put(kindCode)
         buf.putLong(handleId.mostSignificantBits)
         buf.putLong(handleId.leastSignificantBits)
         return buf.array()

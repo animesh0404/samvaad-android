@@ -31,6 +31,8 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import com.samvaad.android.session.SessionRefresher
+import com.samvaad.android.session.SessionStore
 import com.samvaad.android.ui.theme.SamvaadTheme
 import java.io.IOException
 import java.net.MalformedURLException
@@ -80,11 +82,26 @@ private fun normalizeServerAddress(raw: String): String? {
 }
 
 @Composable
-fun SamvaadEntryScreen(authApi: AuthApi = HttpAuthApi()) {
+fun SamvaadEntryScreen(
+    authApi: AuthApi = HttpAuthApi(),
+    /**
+     * Optional durability for the fresh login. When present, the refresh
+     * bundle is persisted before the authenticated state is treated as
+     * restart-recoverable. A persistence failure still enters Home with
+     * the live session (pre-slice behavior) and claims nothing durable.
+     */
+    sessionStore: SessionStore? = null,
+    /** One-shot notice (e.g. expired session) shown on the form. */
+    noticeMessage: String? = null,
+) {
     var serverAddress by remember { mutableStateOf("") }
     var username by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
-    var loginState by remember { mutableStateOf<LoginUiState>(LoginUiState.Idle) }
+    var loginState by remember(noticeMessage) {
+        mutableStateOf<LoginUiState>(
+            noticeMessage?.let(LoginUiState::Failed) ?: LoginUiState.Idle
+        )
+    }
     val submitting = remember { AtomicBoolean(false) }
     val scope = rememberCoroutineScope()
 
@@ -115,6 +132,16 @@ fun SamvaadEntryScreen(authApi: AuthApi = HttpAuthApi()) {
                     )
                 )
                 password = ""
+                if (sessionStore != null) {
+                    try {
+                        SessionRefresher(authApi, sessionStore)
+                            .persistLogin(normalized, session)
+                    } catch (_: Exception) {
+                        // Durability unavailable: proceed with the live
+                        // session anyway. Restart recovery simply won't
+                        // exist for this login; nothing durable is claimed.
+                    }
+                }
                 loginState = LoginUiState.Authenticated(session, normalized)
             } catch (e: CancellationException) {
                 submitting.set(false)
@@ -137,6 +164,9 @@ fun SamvaadEntryScreen(authApi: AuthApi = HttpAuthApi()) {
             identifier = authenticated.session.identifier,
             session = authenticated.session,
             serverAddress = authenticated.serverAddress,
+            authApi = authApi,
+            sessionStore = sessionStore,
+            onLogout = { loginState = LoginUiState.Idle },
         )
         return
     }

@@ -27,10 +27,20 @@
   `DeviceMetadataStoreTest.kt`, `PrekeyIdAllocatorTest.kt`: envelope/AAD,
   corruption/isolation/no-plaintext, metadata round-trip/schema/corrupt
   tolerance, allocator monotonicity/namespaces.
+- `app/src/test/.../SessionStoreTest.kt`, `SessionRefresherTest.kt`,
+  `AuthRefreshLogoutTest.kt`, `SessionGateTest.kt`: session envelope
+  round-trip/no-plaintext, restore/rotate/reject/corrupt/missing-key,
+  single-flight concurrency, logout wipe + device-state preservation,
+  refresh/logout transport mapping, gate restoring/login/logout UI,
+  login persistence incl. store-failure fallback.
 - `app/src/androidTest/.../CryptoVaultInstrumentedTest.kt`,
   `CryptoVaultRestartInstrumentedTest.kt`: Keystore round-trip,
   fail-closed corruption/missing-key, force-stop and physical-reboot
   recovery on emulator + physical Pixel 6a.
+- `app/src/androidTest/.../SessionStoreInstrumentedTest.kt`,
+  `SessionRestartInstrumentedTest.kt`: Keystore session round-trip,
+  fail-closed corruption, namespace isolation, force-stop and
+  physical-reboot recovery on emulator + physical Pixel 6a.
 - `app/src/androidTest/.../ExampleInstrumentedTest.kt`: template package-name
   check. Requires device/emulator; not part of the slice gate.
 

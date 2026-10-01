@@ -53,6 +53,15 @@ class EntryScreenTest {
             }
             return result.getOrThrow()
         }
+
+        override suspend fun refresh(
+            serverAddress: String,
+            refreshToken: String,
+        ): RefreshedSession = throw AssertionError("unexpected refresh")
+
+        override suspend fun logout(serverAddress: String, accessToken: String) {
+            throw AssertionError("unexpected logout")
+        }
     }
 
     private fun setEntryContent(fake: FakeAuthApi = FakeAuthApi()) {

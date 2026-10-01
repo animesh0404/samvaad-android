@@ -70,6 +70,22 @@ DONE.
   approval, recovery flows, messaging, auth persistence, and Room remain
   out of scope (ADR 0005).
 
+### Slice 5 — Authenticated session persistence and restart
+
+DONE.
+
+- Refresh-token session bundle (server address, identifier, refresh
+  token, session ID, refresh expiry) sealed under the existing Keystore
+  wrapping key in a separate no-backup namespace; access tokens stay
+  memory-only. Launch-time silent refresh with single-flight rotation;
+  rejection wipes the record and returns to login with a safe message.
+- First logout affordance on `HomeScreen`: best-effort server revocation,
+  unconditional local wipe (even offline), device/crypto state
+  untouched so a later login reconciles the existing identity.
+- Root `SessionGate` (no navigation framework) routes launch to Home or
+  login. Multi-account, background refresh, biometric lock, and generic
+  401 middleware remain out of scope (ADR 0006).
+
 ## Next
 
 The next slice follows the existing sequencing direction below

@@ -52,14 +52,23 @@ This document describes the Android repository as it exists now. It does not des
   when ACTIVE, and shows the 25 first-bootstrap recovery codes once with
   explicit acknowledgment. Companion approval, recovery flows, and
   messaging do not exist.
+- Durable refresh-token session (ADR 0006): `FileSessionStore` seals
+  the refresh bundle (server address, identifier, refresh token,
+  session ID, refresh expiry) under the same Keystore wrapping key in a
+  separate `getNoBackupFilesDir()/session/` namespace; access tokens stay
+  memory-only. `SessionRefresher` restores on launch with single-flight
+  rotation, wipes on rejection, and never touches device/crypto state on
+  logout. Root `SessionGate` routes to Home or login with safe messages.
 
 ## Not implemented
 
 The Android app currently has none of the following:
 
-- network transport: login plus E2EE device enrollment/prekey calls
-  (`HttpURLConnection`, no WebSocket, no other API clients)
-- persistent authentication/session restoration; automatic token refresh
+- network transport: login/refresh/logout plus E2EE device
+  enrollment/prekey calls (`HttpURLConnection`, no WebSocket, no other
+  API clients)
+- automatic token refresh (launch-time refresh exists; no background
+  refresh, no generic 401 middleware)
 - enrollment beyond first-device bootstrap (companion approval, recovery
   enrollment/entry/rotation, revocation); server device state remains
   authoritative and is re-read, never trusted from the local cache
