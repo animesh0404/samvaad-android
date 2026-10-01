@@ -2,10 +2,27 @@
 
 ## What exists
 
+- `app/src/test/.../EntryScreenTest.kt`: Slice 1 Robolectric-based Compose
+  UI tests for observable entry-screen behavior (branding, both inputs,
+  text entry, Continue confirmation). Test infrastructure only, not
+  production architecture.
 - `app/src/test/.../ExampleUnitTest.kt`: template host test
-  (`assertEquals(4, 2 + 2)`). No Samvaad logic covered.
+  (`assertEquals(4, 2 + 2)`).
 - `app/src/androidTest/.../ExampleInstrumentedTest.kt`: template package-name
-  check. Requires device/emulator; not part of the bootstrap gate.
+  check. Requires device/emulator; not part of the slice gate.
+
+## Test-only harness notes (Slice 1)
+
+- `testImplementation` adds Robolectric `4.17` and Compose `ui-test-junit4`
+  (BOM-managed) for host UI tests only.
+- `testOptions.unitTests.isIncludeAndroidResources = true` wires the merged
+  manifest/resources into host tests.
+- Unit-test tasks run on a JDK 21 toolchain with
+  `--add-opens=java.base/jdk.internal.access=ALL-UNNAMED` (Robolectric 4.17
+  cannot run on JDK 25).
+- `EntryScreenTest` pins `@Config(sdk = [36])`: the Compose BOM's
+  espresso-idling-resource calls the hidden `InputManager.getInstance()`,
+  which is absent from Robolectric's SDK 37 runtime jar.
 
 ## Commands (run from repo root)
 
@@ -15,7 +32,7 @@
 git diff --check
 ```
 
-Bootstrap gate is `assembleDebug` + `testDebugUnitTest` + `diff --check`.
+Slice gate is `assembleDebug` + `testDebugUnitTest` + `diff --check`.
 Instrumented tests are manual (emulator) until a slice needs them.
 
 ## Policy

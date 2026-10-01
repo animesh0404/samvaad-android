@@ -14,26 +14,25 @@ DONE.
 - Build/test baseline verified.
 - Android is designated as the Primary product device client by ADR 0001.
 
-## Next
-
 ### Slice 1 — Basic Samvaad entry UI
 
-PLANNED.
+DONE.
 
-A UI-only slice:
+- The generated greeting is replaced with the first Samvaad-specific
+  screen: Samvaad branding/title, server address input, username input,
+  Continue action.
+- Local Compose UI state only; Continue shows a local confirmation.
+- No networking, authentication, persistence, navigation, device
+  enrollment, or E2EE.
+- Robolectric-based Compose UI tests cover the entry screen. They are
+  test infrastructure only, not production architecture.
 
-- Samvaad branding/title;
-- server address input;
-- username input;
-- Continue action;
-- local UI state only;
-- no networking;
-- no authentication;
-- no persistence;
-- no navigation;
-- no E2EE.
+## Next
 
-The purpose is to establish the basic Compose state/recomposition mental model and replace the generated greeting with the first Samvaad-specific screen.
+The next slice follows the existing sequencing direction below
+(item 1 under "Subsequent planned slices"). No implementation contract
+for it is defined yet; do not start it without an explicit slice
+definition.
 
 ## Subsequent planned slices
 

@@ -6,7 +6,7 @@ Android is the **PRIMARY product device**. Web is a future COMPANION client. TUI
 
 ## Current state
 
-This repository is at the Android bootstrap baseline. The app is an Android Studio-generated Compose application with a single `:app` module and a minimal "Hello Samvaad!" screen.
+Slice 0 (repository bootstrap) and Slice 1 (basic Samvaad entry UI) are complete. The app is a single-`:app`-module Compose application showing the Samvaad entry screen: branding/title, server address input, username input, and a Continue action backed by local UI state only.
 
 No Samvaad networking, authentication, device enrollment, E2EE, local message storage, navigation, ViewModel, DI, background work, push, or history synchronization has been implemented yet.
 

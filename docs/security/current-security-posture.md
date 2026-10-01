@@ -4,7 +4,7 @@ This document describes the Android client's actual security posture, not the se
 
 ## Implemented now
 
-The bootstrap Android application has:
+The Android application (bootstrap + Slice 1 entry screen) has:
 
 - no network transport;
 - no authentication;
@@ -16,6 +16,10 @@ The bootstrap Android application has:
 - no database/DataStore/preferences or other application persistence;
 - no file writes;
 - no message content handling.
+
+The Slice 1 entry screen holds the typed server address and username only
+in in-memory Compose UI state. Continue performs no networking,
+persistence, or navigation.
 
 There are therefore no Android secrets to protect or log yet.
 

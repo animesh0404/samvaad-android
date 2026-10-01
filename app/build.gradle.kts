@@ -33,6 +33,24 @@ android {
     buildFeatures {
         compose = true
     }
+    testOptions {
+        unitTests {
+            isIncludeAndroidResources = true
+        }
+    }
+}
+
+// Slice 1: Robolectric host UI tests run on JDK 21. Robolectric 4.17 cannot
+// run on JDK 25 (FileDescriptor shadow hits strong encapsulation).
+tasks.withType<Test>().configureEach {
+    javaLauncher.set(
+        javaToolchains.launcherFor {
+            languageVersion.set(JavaLanguageVersion.of(21))
+        }
+    )
+    // Required by Robolectric's FileDescriptor shadow on Java 21+
+    // (ApplicationSharedMemory setup at SDK 36+).
+    jvmArgs("--add-opens=java.base/jdk.internal.access=ALL-UNNAMED")
 }
 
 dependencies {
@@ -45,6 +63,8 @@ dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     testImplementation(libs.junit)
+    testImplementation(libs.androidx.compose.ui.test.junit4)
+    testImplementation(libs.robolectric)
     androidTestImplementation(platform(libs.androidx.compose.bom))
     androidTestImplementation(libs.androidx.compose.ui.test.junit4)
     androidTestImplementation(libs.androidx.espresso.core)

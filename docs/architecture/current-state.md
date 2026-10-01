@@ -14,8 +14,16 @@ This document describes the Android repository as it exists now. It does not des
 - Gradle Kotlin DSL with version catalog.
 - AGP `9.4.1`, Kotlin `2.2.10`, Compose BOM `2026.02.01`, Gradle `9.6.0`.
 - `minSdk 30`, `compileSdk 37`, `targetSdk 37`.
-- The current UI is still the bootstrap "Hello Samvaad!" screen.
-- The repository has the generated host and instrumented test templates; there are no Samvaad behavior tests yet.
+- The current UI is the Slice 1 Samvaad entry screen: Samvaad
+  branding/title, server address input, username input, and a Continue
+  action. Inputs are local Compose UI state only; Continue shows a local
+  confirmation and performs no networking, authentication, persistence,
+  or navigation.
+- Host unit tests include Slice 1 Robolectric-based Compose UI tests
+  (`EntryScreenTest`: branding, both inputs, text entry, Continue
+  confirmation) alongside the generated `ExampleUnitTest` template. The
+  instrumented package-name template remains. The Robolectric setup is
+  test infrastructure only, not production architecture.
 - The bootstrap has been verified to build and launch on a Pixel 6a API 33 emulator.
 
 ## Not implemented
