@@ -21,16 +21,31 @@ DONE.
 - The generated greeting is replaced with the first Samvaad-specific
   screen: Samvaad branding/title, server address input, username input,
   Continue action.
-- Local Compose UI state only; Continue shows a local confirmation.
+- Established the entry screen with local Compose UI state (Continue's
+  local demo confirmation was replaced by real authentication in
+  Slice 2).
 - No networking, authentication, persistence, navigation, device
   enrollment, or E2EE.
 - Robolectric-based Compose UI tests cover the entry screen. They are
   test infrastructure only, not production architecture.
 
+### Slice 2 — Authentication boundary
+
+DONE.
+
+- Continue performs a real `POST /api/auth/login` with
+  `clientPlatform: "ANDROID"`; in-memory `AuthSession` only.
+- Password field with obscured input; safe loading/error UI;
+  duplicate-submit guard.
+- Fake-`AuthApi` host tests cover request shape, success/failure UI,
+  no-leak, and duplicate-submit behavior.
+- No persistent credentials, no automatic refresh, no logout UI, no
+  device enrollment, no E2EE.
+
 ## Next
 
 The next slice follows the existing sequencing direction below
-(item 1 under "Subsequent planned slices"). No implementation contract
+(item 2 under "Subsequent planned slices"). No implementation contract
 for it is defined yet; do not start it without an explicit slice
 definition.
 

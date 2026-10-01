@@ -3,9 +3,12 @@
 ## What exists
 
 - `app/src/test/.../EntryScreenTest.kt`: Slice 1 Robolectric-based Compose
-  UI tests for observable entry-screen behavior (branding, both inputs,
-  text entry, Continue confirmation). Test infrastructure only, not
-  production architecture.
+  UI tests for observable entry-screen behavior (branding, inputs,
+  text entry), extended in Slice 2 with a fake `AuthApi` boundary:
+  empty/invalid submission issues no request, request shape
+  (server/identifier/password/`ANDROID`), success/failure UI, token and
+  password non-rendering, and duplicate-submit prevention. No live server
+  required. Test infrastructure only, not production architecture.
 - `app/src/test/.../ExampleUnitTest.kt`: template host test
   (`assertEquals(4, 2 + 2)`).
 - `app/src/androidTest/.../ExampleInstrumentedTest.kt`: template package-name

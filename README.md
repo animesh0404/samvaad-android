@@ -6,9 +6,9 @@ Android is the **PRIMARY product device**. Web is a future COMPANION client. TUI
 
 ## Current state
 
-Slice 0 (repository bootstrap) and Slice 1 (basic Samvaad entry UI) are complete. The app is a single-`:app`-module Compose application showing the Samvaad entry screen: branding/title, server address input, username input, and a Continue action backed by local UI state only.
+Slice 0 (repository bootstrap), Slice 1 (basic Samvaad entry UI), and Slice 2 (authentication boundary) are complete. The app is a single-`:app`-module Compose application showing the Samvaad entry screen: branding/title, server address, username, and password inputs, and a Continue action backed by local UI state. Continue performs a real `POST /api/auth/login` with `clientPlatform: "ANDROID"` and keeps the returned access/refresh tokens and sessionId only in an in-memory session; a minimal "Signed in as …" state proves success.
 
-No Samvaad networking, authentication, device enrollment, E2EE, local message storage, navigation, ViewModel, DI, background work, push, or history synchronization has been implemented yet.
+No Samvaad device enrollment, E2EE, local message storage, navigation, ViewModel, DI, background work, push, history synchronization, persistent credentials, or automatic token refresh has been implemented yet.
 
 ## Baseline
 

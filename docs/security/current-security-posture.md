@@ -4,12 +4,13 @@ This document describes the Android client's actual security posture, not the se
 
 ## Implemented now
 
-The Android application (bootstrap + Slice 1 entry screen) has:
+The Android application (bootstrap + Slice 1 entry screen + Slice 2
+authentication boundary) has:
 
-- no network transport;
-- no authentication;
-- no access/refresh tokens;
-- no sessions or credentials;
+- no network transport beyond the single login HTTP call;
+- no WebSocket/realtime integration;
+- no persisted access/refresh tokens or sessions (in-memory session only);
+- no stored credentials;
 - no E2EE keys;
 - no Android Keystore integration;
 - no recovery codes;
@@ -17,11 +18,18 @@ The Android application (bootstrap + Slice 1 entry screen) has:
 - no file writes;
 - no message content handling.
 
-The Slice 1 entry screen holds the typed server address and username only
-in in-memory Compose UI state. Continue performs no networking,
-persistence, or navigation.
+The Slice 1 entry screen held the typed values only in in-memory Compose
+UI state. Slice 2 keeps that posture and adds the login call below.
 
-There are therefore no Android secrets to protect or log yet.
+Slice 2 transmits the identifier and password over HTTPS to the
+configured server address only, keeps access/refresh tokens and the
+sessionId in memory only, and clears the password from UI state on
+success. Passwords, tokens, and session credentials are never logged,
+never rendered, and never persisted.
+
+In-memory access/refresh tokens and the sessionId are therefore runtime
+secrets: the fixed safe UI messages must never carry server text, HTTP
+internals, or credential material.
 
 ## Required boundaries for future slices
 
