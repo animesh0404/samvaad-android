@@ -20,8 +20,15 @@ object SpikeCryptoMaterial {
     private val encoder: Base64.Encoder = Base64.getEncoder()
     private val decoder: Base64.Decoder = Base64.getDecoder()
 
-    /** Opaque reference to in-memory private material. Carries no key bytes. */
-    data class SealedHandle(val id: UUID = UUID.randomUUID())
+    /**
+     * Opaque reference to private material. Carries no key bytes — only the
+     * vault/store key ([id]) and the record [kind] needed for typed
+     * recovery. Handles are stable: the same [id]/[kind] re-resolves after
+     * process restart once the vault restores the record.
+     */
+    data class SealedHandle(val id: UUID, val kind: CryptoRecordKind) {
+        constructor(kind: CryptoRecordKind) : this(UUID.randomUUID(), kind)
+    }
 
     /** Public half of the identity key pair. Holds freshly serialized bytes. */
     data class Identity(val publicKey: ByteArray, val privateHandle: SealedHandle)
