@@ -29,9 +29,20 @@ android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11
         targetCompatibility = JavaVersion.VERSION_11
+        // Required by org.signal:libsignal-android:0.86.5 (uses Java 8+
+        // core-library APIs). Local spike only.
+        isCoreLibraryDesugaringEnabled = true
     }
     buildFeatures {
         compose = true
+    }
+    packaging {
+        resources {
+            // libsignal-client (JVM jar, pulled transitively by the Android
+            // AAR) bundles desktop natives that must not ship in the APK.
+            // Per signalapp/libsignal README "Use as a library".
+            excludes += setOf("libsignal_jni*.dylib", "signal_jni*.dll")
+        }
     }
     testOptions {
         unitTests {
@@ -62,6 +73,13 @@ dependencies {
     implementation(libs.androidx.compose.ui.tooling.preview)
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
+    // LOCAL-ONLY feasibility spike: exact aligned pair with server/e2ee-lib
+    // (org.signal:libsignal-client:0.86.5). The Android AAR carries the
+    // Android JNI natives; the client JAR carries the shared Java API.
+    // AGPL-3.0-only: local spike only, NOT a distribution artifact.
+    implementation(libs.libsignal.android)
+    implementation(libs.libsignal.client)
+    coreLibraryDesugaring(libs.desugar.jdk.libs)
     testImplementation(libs.junit)
     testImplementation(libs.androidx.compose.ui.test.junit4)
     testImplementation(libs.robolectric)

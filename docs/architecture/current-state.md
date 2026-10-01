@@ -36,6 +36,12 @@ This document describes the Android repository as it exists now. It does not des
   Robolectric setup is test infrastructure only, not production
   architecture.
 - The bootstrap has been verified to build and launch on a Pixel 6a API 33 emulator.
+- Local-only libsignal feasibility spike (ADR 0003): `AndroidSignalAdapter`
+  isolates `org.signal:libsignal-*` 0.86.5 and proves in-memory generation
+  of identity/signed-prekey/Kyber/OTPK material with libsignal
+  parse/verify semantics on the Pixel 6a API 33 x86_64 emulator and a
+  physical Pixel 6a (arm64-v8a). No enrollment, no persistence, no
+  messaging; AGPL distribution decision outstanding.
 
 ## Not implemented
 
