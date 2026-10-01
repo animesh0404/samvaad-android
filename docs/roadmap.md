@@ -52,6 +52,24 @@ DONE.
 - `HomeScreen` receives the identifier string only, never the session
   object or tokens. No navigation framework, no enrollment, no E2EE.
 
+### Slice 4 — First-device bootstrap enrollment
+
+DONE.
+
+- `HomeScreen` drives first-device setup through `EnrollmentCoordinator`:
+  sealed crypto reuse-or-generation with a durable attempt marker,
+  reconcile-first `POST /api/e2ee/devices` on the login session
+  (`409` triggers reconciliation, never blind retry), exactly-100 OTPK
+  upload when ACTIVE, and one-shot transient display of the 25 recovery
+  codes with explicit acknowledgment.
+- Server echoes are verified before trust; server status/role/approval
+  state is re-read and always overrides the local non-secret cache.
+  PENDING responses stop safely with no upload and no approval UI.
+- Fake-API coordinator tests, `ServerSocket`-stub transport tests, and
+  the existing vault/adapter coverage guard the slice. Companion
+  approval, recovery flows, messaging, auth persistence, and Room remain
+  out of scope (ADR 0005).
+
 ## Next
 
 The next slice follows the existing sequencing direction below

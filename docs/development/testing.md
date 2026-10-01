@@ -13,6 +13,24 @@
   required. Test infrastructure only, not production architecture.
 - `app/src/test/.../ExampleUnitTest.kt`: template host test
   (`assertEquals(4, 2 + 2)`).
+- `app/src/test/.../EnrollmentCoordinatorTest.kt`: fake-`E2eeDeviceApi`
+  coordinator tests — bootstrap success, duplicate-submit guard,
+  generate-once/reuse-after-failure, marker-before-POST, metadata
+  persistence, exactly-100 OTPK upload only when ACTIVE, PENDING
+  no-upload, 409-reconcile adopt/none/multiple, transport-failure
+  retention, no-regeneration, identity-mismatch and recovery-required
+  handling, secrets-never-persisted scans, metadata≠authority.
+- `app/src/test/.../HttpE2eeDeviceApiTest.kt`: `ServerSocket`-stub
+  transport tests — exact POST/PUT JSON, Base64, `ANDROID`, HTTPS-only,
+  Bearer auth, 201/400/401/403+reason/409/malformed/transport mapping.
+- `app/src/test/.../CryptoVaultUnitTest.kt`,
+  `DeviceMetadataStoreTest.kt`, `PrekeyIdAllocatorTest.kt`: envelope/AAD,
+  corruption/isolation/no-plaintext, metadata round-trip/schema/corrupt
+  tolerance, allocator monotonicity/namespaces.
+- `app/src/androidTest/.../CryptoVaultInstrumentedTest.kt`,
+  `CryptoVaultRestartInstrumentedTest.kt`: Keystore round-trip,
+  fail-closed corruption/missing-key, force-stop and physical-reboot
+  recovery on emulator + physical Pixel 6a.
 - `app/src/androidTest/.../ExampleInstrumentedTest.kt`: template package-name
   check. Requires device/emulator; not part of the slice gate.
 
@@ -38,7 +56,9 @@ git diff --check
 ```
 
 Slice gate is `assembleDebug` + `testDebugUnitTest` + `diff --check`.
-Instrumented tests are manual (emulator) until a slice needs them.
+Instrumented tests run on the Pixel 6a API 33 x86_64 emulator and the
+physical Pixel 6a where a slice exercises Keystore/natives; no live
+server is used by any test.
 
 ## Policy
 

@@ -42,18 +42,32 @@ This document describes the Android repository as it exists now. It does not des
   parse/verify semantics on the Pixel 6a API 33 x86_64 emulator and a
   physical Pixel 6a (arm64-v8a). No enrollment, no persistence, no
   messaging; AGPL distribution decision outstanding.
+- Keystore-backed crypto vault (ADR 0004): `AndroidCryptoVault` seals
+  libsignal record blobs under a non-exportable AES-256-GCM Keystore
+  wrapping key into `getNoBackupFilesDir()`; fail-closed on
+  missing-key/corruption/version mismatch; restart- and reboot-proven.
+- First-device bootstrap enrollment (ADR 0005): `EnrollmentCoordinator`
+  drives `POST /api/e2ee/devices` on the login session (reconcile-first,
+  attempt marker, `409`-as-reconcile-trigger), uploads exactly 100 OTPKs
+  when ACTIVE, and shows the 25 first-bootstrap recovery codes once with
+  explicit acknowledgment. Companion approval, recovery flows, and
+  messaging do not exist.
 
 ## Not implemented
 
 The Android app currently has none of the following:
 
-- network transport beyond the single login HTTP call (no WebSocket,
-  no other API clients)
+- network transport: login plus E2EE device enrollment/prekey calls
+  (`HttpURLConnection`, no WebSocket, no other API clients)
 - persistent authentication/session restoration; automatic token refresh
-- device enrollment or device-role retrieval
-- E2EE/Signal integration
-- secure key storage / Android Keystore integration
-- recovery-code handling
+- enrollment beyond first-device bootstrap (companion approval, recovery
+  enrollment/entry/rotation, revocation); server device state remains
+  authoritative and is re-read, never trusted from the local cache
+- E2EE session/messaging integration (enrollment exists; no Signal
+  sessions, transport, or history yet)
+- wrapping-key rotation and lifecycle policy (the single Keystore
+  wrapping key has no rotation yet by design)
+- recovery-code handling beyond transient first-bootstrap display
 - local database or durable message store
 - mailbox/history/cursor synchronization
 - navigation between product screens
@@ -111,9 +125,7 @@ No Android-specific production architecture has been selected yet for:
 - persistence/database technology;
 - navigation;
 - ViewModel/state-management structure;
-- dependency injection;
-- Android Signal adapter integration;
-- secure cryptographic persistence format.
+- dependency injection.
 
 These decisions should be made when their corresponding implementation slices require them.
 

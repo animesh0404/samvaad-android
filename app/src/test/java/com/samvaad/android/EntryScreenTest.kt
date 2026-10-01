@@ -212,7 +212,10 @@ class EntryScreenTest {
             .performScrollTo()
         composeTestRule.onNodeWithText("Signed in as alice").assertIsDisplayed()
         composeTestRule
-            .onNodeWithText("Device setup will continue here.")
+            .onNodeWithText("This device is not set up for encrypted messaging yet.")
+            .assertIsDisplayed()
+        composeTestRule
+            .onNodeWithText("Set up this device")
             .assertIsDisplayed()
         composeTestRule
             .onNodeWithContentDescription("Samvaad logo")

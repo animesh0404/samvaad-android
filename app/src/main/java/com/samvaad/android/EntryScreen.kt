@@ -50,7 +50,7 @@ import kotlinx.coroutines.launch
 sealed interface LoginUiState {
     data object Idle : LoginUiState
     data object Loading : LoginUiState
-    data class Authenticated(val session: AuthSession) : LoginUiState
+    data class Authenticated(val session: AuthSession, val serverAddress: String) : LoginUiState
     /** [message] is always one of the fixed safe strings below. */
     data class Failed(val message: String) : LoginUiState
 }
@@ -115,7 +115,7 @@ fun SamvaadEntryScreen(authApi: AuthApi = HttpAuthApi()) {
                     )
                 )
                 password = ""
-                loginState = LoginUiState.Authenticated(session)
+                loginState = LoginUiState.Authenticated(session, normalized)
             } catch (e: CancellationException) {
                 submitting.set(false)
                 throw e
@@ -133,7 +133,11 @@ fun SamvaadEntryScreen(authApi: AuthApi = HttpAuthApi()) {
 
     val authenticated = loginState as? LoginUiState.Authenticated
     if (authenticated != null) {
-        HomeScreen(identifier = authenticated.session.identifier)
+        HomeScreen(
+            identifier = authenticated.session.identifier,
+            session = authenticated.session,
+            serverAddress = authenticated.serverAddress,
+        )
         return
     }
 

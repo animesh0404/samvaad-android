@@ -5,17 +5,20 @@ This document describes the Android client's actual security posture, not the se
 ## Implemented now
 
 The Android application (bootstrap + Slice 1 entry screen + Slice 2
-authentication boundary) has:
+authentication boundary + Slice 4 first-device bootstrap) has:
 
-- no network transport beyond the single login HTTP call;
+- network transport for login plus E2EE device enrollment/prekey calls;
 - no WebSocket/realtime integration;
 - no persisted access/refresh tokens or sessions (in-memory session only);
 - no stored credentials;
-- no E2EE keys;
-- no Android Keystore integration;
-- no recovery codes;
+- durable E2EE private material, sealed per-record under a non-exportable
+  Keystore AES-256-GCM wrapping key in `getNoBackupFilesDir()` (never
+  plaintext, never logged, Keystore holds the wrapping key only);
+- non-secret enrollment metadata (attempt marker, adopted-device hints,
+  ID high-water marks) in a separate `getNoBackupFilesDir()` file —
+  never private bytes, codes, or tokens; never treated as authority;
+- recovery codes shown transiently exactly once, never persisted/logged;
 - no database/DataStore/preferences or other application persistence;
-- no file writes;
 - no message content handling.
 
 The Slice 1 entry screen held the typed values only in in-memory Compose
@@ -47,7 +50,12 @@ When E2EE/device enrollment is introduced:
 - private keys must never be sent to the server;
 - the server remains cryptographically blind;
 - device role must be consumed from the server's read-only device representation; Android must not self-declare PRIMARY/COMPANION;
-- secure persistent cryptographic storage requires an explicit Android design before implementation.
+- enrollment must reuse (never regenerate) local identity on uncertain
+  outcomes; ambiguous server state reconciles via identity-pubkey match
+  or fails closed;
+- recovery codes are display-once transients: never persisted, logged,
+  or vaulted; crash-before-acknowledgment leaves an Active-unacked
+  device, never re-issued codes.
 
 When Primary history ownership is introduced:
 
@@ -57,7 +65,13 @@ When Primary history ownership is introduced:
 
 ## Current template caveat
 
-The generated manifest currently references Android backup-rule resources. They remain template placeholders and no sensitive application state is currently stored. Revisit backup configuration before introducing persistent credentials, keys, or message history.
+The generated manifest references Android backup-rule resources that
+remain template placeholders. Sensitive crypto state is now stored, but
+exclusively in `getNoBackupFilesDir()` (vault records, enrollment
+metadata) plus the Keystore-held wrapping key — locations the backup
+transports exclude by construction. Backup-rule/release hardening for
+any future backed-up data remains deferred; revisit before introducing
+persistent credentials, message history, or any backup-eligible store.
 
 ## Deferred security architecture
 
