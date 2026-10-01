@@ -200,7 +200,7 @@ class EntryScreenTest {
     }
 
     @Test
-    fun successfulLogin_showsAuthenticatedStateWithoutSecrets() {
+    fun successfulLogin_transitionsToHomeWithoutSecrets() {
         val fake = FakeAuthApi()
         setEntryContent(fake)
         fillValidForm()
@@ -212,6 +212,12 @@ class EntryScreenTest {
             .performScrollTo()
         composeTestRule.onNodeWithText("Signed in as alice").assertIsDisplayed()
         composeTestRule
+            .onNodeWithText("Device setup will continue here.")
+            .assertIsDisplayed()
+        composeTestRule
+            .onNodeWithContentDescription("Samvaad logo")
+            .assertIsDisplayed()
+        composeTestRule
             .onAllNodesWithText("access-1", substring = true)
             .assertCountEquals(0)
         composeTestRule
@@ -222,6 +228,27 @@ class EntryScreenTest {
             .assertCountEquals(0)
         composeTestRule
             .onAllNodesWithText("s3cr3t!", substring = true)
+            .assertCountEquals(0)
+    }
+
+    @Test
+    fun failedLogin_remainsOnEntryState() {
+        val fake = FakeAuthApi()
+        fake.result = Result.failure(AuthRejectedException())
+        setEntryContent(fake)
+        fillValidForm()
+        composeTestRule.onNodeWithText("Continue").performScrollTo()
+        composeTestRule.onNodeWithText("Continue").performClick()
+
+        composeTestRule
+            .onNodeWithText("Sign in failed. Check your details and try again.")
+            .performScrollTo()
+        composeTestRule
+            .onNodeWithText("Server address")
+            .assertIsDisplayed()
+        composeTestRule.onNodeWithText("Continue").assertIsDisplayed()
+        composeTestRule
+            .onAllNodesWithText("Signed in as", substring = true)
             .assertCountEquals(0)
     }
 

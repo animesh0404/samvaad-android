@@ -42,6 +42,16 @@ DONE.
 - No persistent credentials, no automatic refresh, no logout UI, no
   device enrollment, no E2EE.
 
+### Slice 3 — Authenticated session boundary
+
+DONE.
+
+- Successful login transitions from the entry form to a placeholder
+  `HomeScreen` showing the authenticated identifier and an explicit
+  device-setup placeholder; failed login stays on the entry form.
+- `HomeScreen` receives the identifier string only, never the session
+  object or tokens. No navigation framework, no enrollment, no E2EE.
+
 ## Next
 
 The next slice follows the existing sequencing direction below

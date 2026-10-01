@@ -22,10 +22,12 @@ This document describes the Android repository as it exists now. It does not des
   (`HttpURLConnection` + `org.json`; no networking library) with
   `clientPlatform: "ANDROID"`, explicit-null `installationId`, and the
   optional `clientName`/`clientVersion` omitted. Success keeps an
-  in-memory `AuthSession` (access/refresh tokens, sessionId) and shows a
-  minimal "Signed in as …" state; the password is cleared from UI state
-  on success. Failures show fixed safe messages; duplicate submissions
-  are guarded.
+  in-memory `AuthSession` (access/refresh tokens, sessionId) and
+  transitions to a placeholder `HomeScreen` showing only the
+  authenticated identifier plus an explicit device-setup placeholder;
+  the session object never reaches UI code. The password is cleared
+  from UI state on success. Failures show fixed safe messages;
+  duplicate submissions are guarded.
 - Host unit tests include Slice 1 Robolectric-based Compose UI tests
   (`EntryScreenTest`: branding, inputs, text entry) extended in Slice 2
   with a fake `AuthApi` boundary (request shape, success/failure UI,

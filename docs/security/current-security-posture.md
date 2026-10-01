@@ -24,8 +24,9 @@ UI state. Slice 2 keeps that posture and adds the login call below.
 Slice 2 transmits the identifier and password over HTTPS to the
 configured server address only, keeps access/refresh tokens and the
 sessionId in memory only, and clears the password from UI state on
-success. Passwords, tokens, and session credentials are never logged,
-never rendered, and never persisted.
+success. The authenticated UI receives the identifier string only, never
+the session object or tokens. Passwords, tokens, and session credentials
+are never logged, never rendered, and never persisted.
 
 In-memory access/refresh tokens and the sessionId are therefore runtime
 secrets: the fixed safe UI messages must never carry server text, HTTP

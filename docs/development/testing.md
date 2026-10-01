@@ -7,7 +7,9 @@
   text entry), extended in Slice 2 with a fake `AuthApi` boundary:
   empty/invalid submission issues no request, request shape
   (server/identifier/password/`ANDROID`), success/failure UI, token and
-  password non-rendering, and duplicate-submit prevention. No live server
+  password non-rendering, and duplicate-submit prevention. Slice 3 adds
+  transition coverage: success reaches the home surface with the
+  identifier, failure stays on the entry form. No live server
   required. Test infrastructure only, not production architecture.
 - `app/src/test/.../ExampleUnitTest.kt`: template host test
   (`assertEquals(4, 2 + 2)`).

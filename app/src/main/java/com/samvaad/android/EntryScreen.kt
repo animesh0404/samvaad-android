@@ -131,6 +131,12 @@ fun SamvaadEntryScreen(authApi: AuthApi = HttpAuthApi()) {
         }
     }
 
+    val authenticated = loginState as? LoginUiState.Authenticated
+    if (authenticated != null) {
+        HomeScreen(identifier = authenticated.session.identifier)
+        return
+    }
+
     Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
         Column(
             modifier = Modifier
@@ -150,67 +156,62 @@ fun SamvaadEntryScreen(authApi: AuthApi = HttpAuthApi()) {
                 text = "Samvaad",
                 style = MaterialTheme.typography.headlineMedium
             )
-            val authenticated = loginState as? LoginUiState.Authenticated
-            if (authenticated != null) {
-                Text(text = "Signed in as ${authenticated.session.identifier}")
-            } else {
-                OutlinedTextField(
-                    value = serverAddress,
-                    onValueChange = { serverAddress = it },
-                    label = { Text("Server address") },
-                    singleLine = true,
-                    enabled = !loading,
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
-                    modifier = Modifier.fillMaxWidth()
-                )
-                OutlinedTextField(
-                    value = username,
-                    onValueChange = { username = it },
-                    label = { Text("Username") },
-                    singleLine = true,
-                    enabled = !loading,
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
-                    modifier = Modifier.fillMaxWidth()
-                )
-                OutlinedTextField(
-                    value = password,
-                    onValueChange = { password = it },
-                    label = { Text("Password") },
-                    singleLine = true,
-                    enabled = !loading,
-                    visualTransformation = PasswordVisualTransformation(),
-                    keyboardOptions = KeyboardOptions(
-                        keyboardType = KeyboardType.Password,
-                        imeAction = ImeAction.Done
-                    ),
-                    modifier = Modifier.fillMaxWidth()
-                )
-                Button(
-                    onClick = ::startLogin,
-                    enabled = !loading,
-                ) {
-                    if (loading) {
-                        Row(
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(20.dp),
-                                strokeWidth = 2.dp
-                            )
-                            Text("Continue")
-                        }
-                    } else {
+            OutlinedTextField(
+                value = serverAddress,
+                onValueChange = { serverAddress = it },
+                label = { Text("Server address") },
+                singleLine = true,
+                enabled = !loading,
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
+                modifier = Modifier.fillMaxWidth()
+            )
+            OutlinedTextField(
+                value = username,
+                onValueChange = { username = it },
+                label = { Text("Username") },
+                singleLine = true,
+                enabled = !loading,
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
+                modifier = Modifier.fillMaxWidth()
+            )
+            OutlinedTextField(
+                value = password,
+                onValueChange = { password = it },
+                label = { Text("Password") },
+                singleLine = true,
+                enabled = !loading,
+                visualTransformation = PasswordVisualTransformation(),
+                keyboardOptions = KeyboardOptions(
+                    keyboardType = KeyboardType.Password,
+                    imeAction = ImeAction.Done
+                ),
+                modifier = Modifier.fillMaxWidth()
+            )
+            Button(
+                onClick = ::startLogin,
+                enabled = !loading,
+            ) {
+                if (loading) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(20.dp),
+                            strokeWidth = 2.dp
+                        )
                         Text("Continue")
                     }
+                } else {
+                    Text("Continue")
                 }
-                val failed = loginState as? LoginUiState.Failed
-                if (failed != null) {
-                    Text(
-                        text = failed.message,
-                        color = MaterialTheme.colorScheme.error
-                    )
-                }
+            }
+            val failed = loginState as? LoginUiState.Failed
+            if (failed != null) {
+                Text(
+                    text = failed.message,
+                    color = MaterialTheme.colorScheme.error
+                )
             }
         }
     }
