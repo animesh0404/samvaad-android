@@ -1,30 +1,57 @@
 # Current Security Posture
 
-Baseline has no security-sensitive behavior. This document records the
-absence honestly so later slices have a boundary to meet.
+This document describes the Android client's actual security posture, not the server's security properties.
 
-## Implemented: nothing sensitive
+## Implemented now
 
-- No networking, no HTTP client, no WebSocket.
-- No authentication, no tokens, no sessions, no credentials anywhere.
-- No database, no DataStore/Preferences, no file writes.
-- No E2EE keys, no keystore usage, no recovery codes.
-- No logging of secrets (nothing to log).
+The bootstrap Android application has:
 
-## Boundaries for future slices (not implemented)
+- no network transport;
+- no authentication;
+- no access/refresh tokens;
+- no sessions or credentials;
+- no E2EE keys;
+- no Android Keystore integration;
+- no recovery codes;
+- no database/DataStore/preferences or other application persistence;
+- no file writes;
+- no message content handling.
 
-- Never persist or log passwords, tokens, private keys, or recovery codes in
-  plaintext.
-- When auth/enrollment arrive: hold secrets in memory only until a reviewed
-  storage decision exists; follow the server’s `E2EE_RECOVERY_REQUIRED`
-  routing and one-shot recovery-code display rules (see server checkpoint).
-- The server stays cryptographically blind; the client must never send
-  private keys to the server.
-- Backup rules (`res/xml/backup_rules.xml`, `data_extraction_rules.xml`) are
-  empty template placeholders — revisit before any credential/key storage.
+There are therefore no Android secrets to protect or log yet.
 
-## Deferred
+## Required boundaries for future slices
 
-- Encrypted backup/restore, keystore-backed storage, push notifications,
-  rate-limit/error-code handling — all deferred with the features they
-  belong to.
+When authentication is introduced:
+
+- never log passwords, access tokens, refresh tokens, recovery codes, or private cryptographic material;
+- do not persist credentials in plaintext;
+- follow the server's existing session/authentication contracts;
+- keep authentication/session state separate from cryptographic device state.
+
+When E2EE/device enrollment is introduced:
+
+- private keys must be generated and retained on the client;
+- private keys must never be sent to the server;
+- the server remains cryptographically blind;
+- device role must be consumed from the server's read-only device representation; Android must not self-declare PRIMARY/COMPANION;
+- secure persistent cryptographic storage requires an explicit Android design before implementation.
+
+When Primary history ownership is introduced:
+
+- durable local conversation history becomes security-sensitive application data;
+- backup/restore semantics must be designed before enabling Android backup for such data;
+- the future Companion history-sync protocol must remain E2EE.
+
+## Current template caveat
+
+The generated manifest currently references Android backup-rule resources. They remain template placeholders and no sensitive application state is currently stored. Revisit backup configuration before introducing persistent credentials, keys, or message history.
+
+## Deferred security architecture
+
+Not yet implemented/locked:
+
+- secure cryptographic key persistence format;
+- encrypted backup/restore;
+- final history-sync protocol;
+- push-notification security/privacy design;
+- final server retention/liveness policies.

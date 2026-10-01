@@ -1,45 +1,56 @@
 # Samvaad Android
 
-Android is the **PRIMARY** Samvaad device. Web will be a future COMPANION.
+Native Android client for Samvaad, built with Kotlin and Jetpack Compose.
 
-Current state: Android Studio-generated Jetpack Compose baseline that launches
-and renders “Hello Samvaad!”. No Samvaad features exist yet.
+Android is the **PRIMARY product device**. Web is a future COMPANION client. TUI remains parked/testing-oriented.
 
-## Repository layout
+## Current state
 
-```text
-samvaad-android/
-├── app/            # Android application module (Compose UI, manifest, res)
-├── docs/           # project documentation (map in docs/README.md)
-├── gradle/         # version catalog + wrapper
-├── README.md
-├── AGENTS.md
-├── settings.gradle.kts
-├── build.gradle.kts
-└── gradle.properties
-```
+This repository is at the Android bootstrap baseline. The app is an Android Studio-generated Compose application with a single `:app` module and a minimal "Hello Samvaad!" screen.
+
+No Samvaad networking, authentication, device enrollment, E2EE, local message storage, navigation, ViewModel, DI, background work, push, or history synchronization has been implemented yet.
 
 ## Baseline
 
-- Package: `com.samvaad.android`
+- Package/application ID: `com.samvaad.android`
 - Kotlin + Jetpack Compose + Kotlin DSL
-- `minSdk = 30` (Android 11), `compileSdk = 37`, `targetSdk = 37`
-- Verified launch on Pixel 6a API 33 emulator.
-- Single `MainActivity` + `SamvaadTheme`, no navigation, no ViewModel, no DI.
+- `minSdk = 30` (Android 11)
+- `compileSdk = 37`
+- `targetSdk = 37`
+- AGP `9.4.1`
+- Kotlin `2.2.10`
+- Compose BOM `2026.02.01`
+- Gradle `9.6.0`
+- Single `:app` module
+- Verified launch on a Pixel 6a API 33 emulator
 
-## Boundaries (frozen for now)
+## Server integration boundary
 
-Do not invent or change server APIs. The server is frozen at:
+The Android client consumes existing server contracts and does not invent Android-specific endpoints.
 
-`464e07eb7acddf7f89e18be9425ca6f87a0875a7`
+Current public server baseline:
 
-See `docs/api/server-checkpoint.md`. The exact integration sequence lives in
-the server repo at `docs/api/android-integration-checklist.md` — it is not
-duplicated here.
+`164463da10505c2b789556e02536e2f1e8701cf5`
+(`feat: enforce primary and companion device roles`)
 
-Explicitly **not implemented**: networking, authentication, device enrollment,
-E2EE / Signal, database / message store, navigation, ViewModel, DI, background
-work, push notifications, history sync.
+This baseline enforces server-assigned device roles: one non-revoked PRIMARY and up to four non-revoked COMPANIONS, within the five-device non-revoked limit.
+
+The server already has E2EE device/enrollment, prekey/recovery, ciphertext transport, mailbox, history, synchronization-cursor, and device-level realtime foundations. Android has not integrated them yet.
+
+The server's durable ciphertext history is a **transition state**. The target architecture makes the Android Primary the durable history authority and uses the server as a bounded delivery/replay layer. Retention/eviction and the Primary-to-Companion history-sync protocol are not yet locked.
+
+Field-level contracts remain in the server repository; this Android repository intentionally does not duplicate them.
+
+## Documentation map
+
+- `docs/architecture/current-state.md` — what Android actually implements now.
+- `docs/roadmap.md` — incremental Android implementation sequence.
+- `docs/api/server-checkpoint.md` — server integration boundary and version reference.
+- `docs/security/current-security-posture.md` — current Android security posture.
+- `docs/development/setup.md` — local development baseline.
+- `docs/development/testing.md` — test baseline and commands.
+- `docs/adr/` — Android-only architectural decisions.
+- `AGENTS.md` — implementation guardrails.
 
 ## Build / test
 
@@ -49,6 +60,3 @@ work, push notifications, history sync.
 ```
 
 `git diff --check` must be clean before committing.
-
-See `docs/development/setup.md`, `docs/development/testing.md`,
-`docs/architecture/current-state.md`, `docs/roadmap.md`, and `AGENTS.md`.

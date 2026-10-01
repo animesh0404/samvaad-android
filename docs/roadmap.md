@@ -1,31 +1,67 @@
 # Android Roadmap
 
-Slice discipline: one small reviewable slice at a time. The developer is new
-to native Android; do not bundle unrelated learning goals.
+The Android roadmap is incremental. Each slice should be small, buildable, reviewable, and stopped before unrelated architecture is introduced.
 
-## Slice 0 — Repository bootstrap: DONE
+## Completed
 
-- Generated Compose baseline + “Hello Samvaad!” + this `docs/` foundation.
-- First commit. No features.
+### Slice 0 — Repository bootstrap
 
-## Next candidate slices (PLANNED, in order, none started)
+DONE.
 
-1. UI hygiene (no behavior change): align `GreetingPreview` param, extract
-   greeting if useful, keep same rendered output.
-2. Compose learning slice: string resources / theme reading — still no
-   navigation, ViewModel, or persistence.
-3. Development hardening: document emulator + unit-test workflow from real
-   runs (no new features).
+- Android Studio Compose baseline established.
+- Repository documentation/ADR foundation established.
+- Git history established and repository published.
+- Build/test baseline verified.
+- Android is designated as the Primary product device client by ADR 0001.
 
-## Explicitly deferred (do not schedule without a decision)
+## Next
 
-- Networking / HTTP client choice.
-- Authentication (login / `clientPlatform: "ANDROID"` / token handling).
-- Device enrollment, recovery codes, prekeys, Kyber material.
-- E2EE / Signal integration, mailbox/history/cursor, realtime WebSocket.
-- Database / `MessageStore` / local history.
-- Navigation, ViewModel, DI, background work, push notifications.
-- History sync (Primary → Companion protocol).
+### Slice 1 — Basic Samvaad entry UI
 
-Each deferred item waits on its roadmap slice and on the frozen server
-contracts in `docs/api/server-checkpoint.md`.
+PLANNED.
+
+A UI-only slice:
+
+- Samvaad branding/title;
+- server address input;
+- username input;
+- Continue action;
+- local UI state only;
+- no networking;
+- no authentication;
+- no persistence;
+- no navigation;
+- no E2EE.
+
+The purpose is to establish the basic Compose state/recomposition mental model and replace the generated greeting with the first Samvaad-specific screen.
+
+## Subsequent planned slices
+
+These are sequencing directions, not already-defined implementation contracts.
+
+1. Entry/authentication boundary against the existing server authentication contract.
+2. First-device bootstrap and E2EE enrollment.
+3. Secure persistent device/cryptographic state.
+4. Existing-device approval and recovery flows.
+5. E2EE session establishment and encrypted message transport.
+6. Mailbox, history, acknowledgement, and synchronization-cursor reconciliation.
+7. Primary-owned durable conversation history.
+8. Primary-to-Companion history synchronization when its protocol is defined.
+9. Web Companion client after the Android Primary vertical slice.
+
+A slice must stop and surface an architectural decision if the required server contract or client-side security design is not already defined.
+
+## Explicitly deferred
+
+- exact server ciphertext-buffer retention/eviction policy;
+- final Primary/Companion liveness/expiry policy;
+- Primary-to-Companion history-sync wire protocol;
+- encrypted backup/restore design;
+- push notification design;
+- group E2EE / MLS;
+- nonessential messaging features such as read receipts, typing/presence, edits, replies, attachments, and reactions.
+
+## Parked
+
+- TUI feature development.
+- `samvaad-e2ee-lib` MessageStore implementation.

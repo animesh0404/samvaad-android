@@ -5,36 +5,33 @@
 
 ## Context
 
-Server ADR 0025 establishes Primary/Companion device authority with
-device-owned history. The product direction (server roadmap, TUI parked,
-e2ee-lib MessageStore parked) names Android as the PRIMARY device and Web as
-a future COMPANION.
+Server ADR 0025 establishes one Primary Device and up to four Companion Devices, with the Primary as the authoritative owner of durable conversation history.
+
+The product direction selects native Android as the first production-oriented Primary client. Web is the future Companion client and TUI development is parked/testing-oriented.
 
 ## Decision
 
-`samvaad-android` is the PRIMARY-device client. It will eventually own
-durable Primary history locally; until that slice exists, the server’s
-durable per-device history is the fallback (per the frozen integration
-checklist).
+`samvaad-android` is the Android implementation of the **Primary product device**.
 
-Android consumes the same E2EE contracts as every other client. No
-Android-specific endpoints will be invented.
+This decision establishes product/device role, not a claim that the current Android code already owns durable history. The Android app must first implement the required local persistence and E2EE capabilities in later slices.
+
+When the server exposes device records, Android consumes the server-assigned read-only `deviceRole`. Android must never infer or self-assign PRIMARY or COMPANION.
+
+No Android-specific server endpoints are introduced by this ADR.
 
 ## Consequences
 
 ### Positive
 
-- Single primary-history owner aligns with server authority model.
-- Companion (Web) history-sync has a defined future source.
+- Android has a clear product responsibility: become the Primary history owner.
+- Future Web Companion synchronization has an explicit source of authority.
+- The decision aligns client development with the server's current device-role model.
 
 ### Negative
 
-- Primary responsibilities (durable store, backup/restore, sync source)
-  arrive as future complexity; not in bootstrap.
+- Durable local history, secure cryptographic persistence, backup/recovery, and future Companion synchronization add complexity that is not present in the bootstrap.
+- Until Primary history ownership is implemented, the server's current durable ciphertext history remains a transition-state fallback.
 
 ## Scope
 
-Applies to all Android slices. Any local state must be justified as
-client/session/presentation state until the durable Primary store slice is
-explicitly scheduled. Never infer primaryship — always read `deviceRole`
-from the server when devices exist.
+Applies to Android slices. It does not define the history-sync protocol, retention policy, liveness/expiry policy, backup format, or Android implementation architecture for persistence/networking/E2EE. Those require their own decisions when implementation reaches them.

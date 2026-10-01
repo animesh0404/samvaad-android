@@ -1,43 +1,106 @@
 # Architecture Current State
 
-Date: 2026-10-01. Baseline: Android Studio-generated project + manual
-“Hello Samvaad!” text change. Verified to launch on Pixel 6a API 33 emulator.
+Date: 2026-10-01.
+
+This document describes the Android repository as it exists now. It does not describe future architecture as implemented behavior.
 
 ## Implemented
 
-- Single-module app (`:app`), package `com.samvaad.android`.
-- `MainActivity : ComponentActivity` with `enableEdgeToEdge()` and
-  `setContent { SamvaadTheme { Scaffold { Greeting("Samvaad") } } }`.
-- Compose Material3 theme (`ui.theme.SamvaadTheme`, `Color.kt`, `Type.kt`)
-  with dynamic color on Android 12+.
-- `AndroidManifest.xml`: one exported `MainActivity` with `MAIN`/`LAUNCHER`,
-  `Theme.Samvaad` window theme, `adjustResize`.
-- Gradle: Kotlin DSL, version catalog (`gradle/libs.versions.toml`), AGP
-  `9.4.1`, Kotlin `2.2.10`, Compose BOM `2026.02.01`.
-- SDK: `minSdk 30`, `compileSdk 37`, `targetSdk 37`.
-- Tests: default `ExampleUnitTest` (host) + `ExampleInstrumentedTest`
-  (package-name check). No Samvaad tests yet.
+- Single Android application module (`:app`), package/application ID `com.samvaad.android`.
+- Kotlin + Jetpack Compose + Material 3.
+- `MainActivity : ComponentActivity` launches the Compose content.
+- `SamvaadTheme` provides the generated Material 3 theme with dynamic color on Android 12+.
+- One launcher activity is declared in the manifest.
+- Gradle Kotlin DSL with version catalog.
+- AGP `9.4.1`, Kotlin `2.2.10`, Compose BOM `2026.02.01`, Gradle `9.6.0`.
+- `minSdk 30`, `compileSdk 37`, `targetSdk 37`.
+- The current UI is still the bootstrap "Hello Samvaad!" screen.
+- The repository has the generated host and instrumented test templates; there are no Samvaad behavior tests yet.
+- The bootstrap has been verified to build and launch on a Pixel 6a API 33 emulator.
 
-## Planned (not started)
+## Not implemented
 
-- Any Samvaad feature: login, enrollment, messaging, persistence, realtime.
-- See `docs/roadmap.md`.
+The Android app currently has none of the following:
 
-## Deferred / parked (explicitly out of scope for upcoming slices)
+- network transport or HTTP/WebSocket integration
+- authentication or session management
+- device enrollment or device-role retrieval
+- E2EE/Signal integration
+- secure key storage / Android Keystore integration
+- recovery-code handling
+- local database or durable message store
+- mailbox/history/cursor synchronization
+- navigation between product screens
+- ViewModel or dependency-injection framework
+- background work
+- push notifications
+- Primary-to-Companion history synchronization
 
-- TUI: parked.
-- `samvaad-e2ee-lib` MessageStore implementation: parked.
-- Web companion: future, no work in this repo.
+## Server architecture relevant to Android
 
-## Unknown / undecided
+The current public server implementation baseline is:
 
-- No Android architecture decided yet (no ViewModel/navigation/DI/database
-  choice). Do not assume one.
-- No networking stack, no local store, no E2EE adapter chosen.
+`164463da10505c2b789556e02536e2f1e8701cf5`
+(`feat: enforce primary and companion device roles`).
+
+The server has implemented:
+
+- server-assigned device roles: one non-revoked PRIMARY plus up to four non-revoked COMPANIONS;
+- five-device non-revoked cardinality enforcement;
+- E2EE device enrollment, prekey/recovery foundations, session/device binding and device approval/revocation flows;
+- ciphertext-only message submission;
+- per-device mailbox and acknowledgement;
+- per-device durable ciphertext history;
+- per-conversation synchronization cursors;
+- best-effort device-level realtime delivery with durable mailbox fallback.
+
+The server remains cryptographically blind to message content.
+
+## Transition state vs target architecture
+
+The server's per-device durable ciphertext history is currently a **transition-state implementation**. It is not yet the final long-term history architecture.
+
+Target direction established by server ADR 0025:
+
+- Android is the Primary product device.
+- Primary owns durable conversation history.
+- Web is a future Companion.
+- The server becomes a bounded delivery/replay layer rather than the user's permanent chat archive.
+- Companion history is obtained through an E2EE Primary-to-Companion synchronization mechanism.
+
+Not yet locked or implemented:
+
+- exact server retention/eviction count and semantics;
+- final Primary/Companion liveness/expiry policy;
+- Primary-to-Companion history-sync wire protocol;
+- encrypted backup/restore design.
+
+Therefore Android must not implement or assume any of those details until explicitly defined.
+
+## Android architecture decisions not yet made
+
+No Android-specific production architecture has been selected yet for:
+
+- networking library;
+- persistence/database technology;
+- navigation;
+- ViewModel/state-management structure;
+- dependency injection;
+- Android Signal adapter integration;
+- secure cryptographic persistence format.
+
+These decisions should be made when their corresponding implementation slices require them.
+
+## Parked / future clients
+
+- TUI is parked and remains useful for testing/companion behavior.
+- The standalone `samvaad-e2ee-lib` MessageStore implementation is parked.
+- Web is a future Companion client and has no implementation in this repository.
 
 ## What this is not
 
-- Not a thin-client copy of TUI architecture.
-- Not an E2EE implementation.
-- The unused `res/values/colors.xml` template entries and empty backup-rule
-  placeholders are inherited template leftovers, not Samvaad design.
+- not a TUI architecture port;
+- not an E2EE implementation;
+- not a history-sync implementation;
+- not a server-side implementation;
+- not a claim that Android already owns durable chat history.
