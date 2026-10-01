@@ -129,6 +129,34 @@ class EntryScreenTest {
     }
 
     @Test
+    fun httpServerAddress_isRejectedWithoutLoginRequest() {
+        val fake = FakeAuthApi()
+        setEntryContent(fake)
+
+        composeTestRule
+            .onNodeWithText("Server address")
+            .performTextInput("http://samvaad.example:8080")
+        composeTestRule
+            .onNodeWithText("Username")
+            .performTextInput("alice")
+        composeTestRule
+            .onNodeWithText("Password")
+            .performTextInput("s3cr3t!")
+        composeTestRule.onNodeWithText("Continue").performScrollTo()
+        composeTestRule.onNodeWithText("Continue").performClick()
+
+        // Plaintext HTTP is rejected locally: AuthApi is never called,
+        // so the password is never sent.
+        assert(fake.calls.isEmpty())
+        composeTestRule
+            .onNodeWithText("Enter a valid server address, e.g. https://host:8080.")
+            .performScrollTo()
+        composeTestRule
+            .onNodeWithText("Enter a valid server address, e.g. https://host:8080.")
+            .assertIsDisplayed()
+    }
+
+    @Test
     fun invalidServerAddress_issuesNoLoginRequest() {
         val fake = FakeAuthApi()
         setEntryContent(fake)

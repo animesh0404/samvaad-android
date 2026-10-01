@@ -64,11 +64,14 @@ private const val REJECTED_MESSAGE =
 private const val UNREACHABLE_MESSAGE =
     "Cannot reach the server. Check the address and try again."
 
-/** Explicit http/https URL; no silent scheme substitution. Null when invalid. */
+/**
+ * Explicit HTTPS URL; plain HTTP is rejected locally. No silent scheme
+ * substitution and no cleartext. Null when invalid or insecure.
+ */
 private fun normalizeServerAddress(raw: String): String? {
     return try {
         val url = URL(raw)
-        if (url.protocol != "http" && url.protocol != "https") return null
+        if (url.protocol != "https") return null
         if (url.host.isNullOrBlank()) return null
         raw.trimEnd('/')
     } catch (e: MalformedURLException) {

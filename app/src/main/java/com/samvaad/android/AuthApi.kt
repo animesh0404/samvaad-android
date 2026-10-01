@@ -82,11 +82,10 @@ class HttpAuthApi(
                 if (connection.responseCode != HttpURLConnection.HTTP_OK) {
                     throw AuthRejectedException()
                 }
-                val responseBody = try {
+                // Any I/O failure from here on is a transport failure and
+                // must propagate as IOException, not rejection.
+                val responseBody =
                     connection.inputStream.bufferedReader().use { it.readText() }
-                } catch (e: IOException) {
-                    throw AuthRejectedException()
-                }
                 try {
                     val json = JSONObject(responseBody)
                     AuthSession(
