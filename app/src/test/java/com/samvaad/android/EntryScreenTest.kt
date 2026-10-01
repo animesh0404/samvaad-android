@@ -2,8 +2,10 @@ package com.samvaad.android
 
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTextInput
 import com.samvaad.android.ui.theme.SamvaadTheme
 import org.junit.Rule
@@ -41,6 +43,9 @@ class EntryScreenTest {
         setEntryContent()
 
         composeTestRule.onNodeWithText("Samvaad").assertIsDisplayed()
+        composeTestRule
+            .onNodeWithContentDescription("Samvaad logo")
+            .assertIsDisplayed()
     }
 
     @Test
@@ -81,6 +86,9 @@ class EntryScreenTest {
             .performTextInput("alice")
         composeTestRule.onNodeWithText("Continue").performClick()
 
+        composeTestRule
+            .onNodeWithText("Continuing as alice on https://samvaad.example:8080")
+            .performScrollTo()
         composeTestRule
             .onNodeWithText("Continuing as alice on https://samvaad.example:8080")
             .assertIsDisplayed()
