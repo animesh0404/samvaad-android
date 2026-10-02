@@ -104,6 +104,14 @@ class EnrollmentCoordinatorTest {
             requestId: java.util.UUID,
         ): com.samvaad.android.enroll.ClaimedDeviceBundle =
             throw AssertionError("no discovery in this slice")
+
+        override suspend fun submitMessage(
+            session: AuthSession,
+            serverAddress: String,
+            requestId: java.util.UUID,
+            envelopes: List<com.samvaad.android.enroll.MessageEnvelopeSubmit>,
+        ): com.samvaad.android.enroll.SubmitMessageResult =
+            throw AssertionError("no submission in this slice")
     }
 
     private lateinit var context: Context

@@ -158,6 +158,65 @@ class HttpE2eeDeviceApi(
         }
     }
 
+    override suspend fun submitMessage(
+        session: AuthSession,
+        serverAddress: String,
+        requestId: java.util.UUID,
+        envelopes: List<MessageEnvelopeSubmit>,
+    ): SubmitMessageResult = withContext(Dispatchers.IO) {
+        require(envelopes.isNotEmpty()) { "at least one envelope is required" }
+        val body = JSONObject()
+            .put("messageRequestId", requestId.toString())
+            .put("envelopes", JSONArray().also { array ->
+                envelopes.forEach {
+                    array.put(
+                        JSONObject()
+                            .put("senderDeviceId", it.senderDeviceId)
+                            .put("recipientDeviceId", it.recipientDeviceId)
+                            .put("envelopeType", it.envelopeType)
+                            .put("ciphertext", it.ciphertextBase64)
+                    )
+                }
+            })
+            .toString()
+        val (code, response) = post(session, serverAddress, "/api/e2ee/messages", body)
+        // 201 = new message, 200 = identical requestId replay.
+        if (code != HttpURLConnection.HTTP_OK && code != HttpURLConnection.HTTP_CREATED) {
+            throw classifySubmit(code, response)
+        }
+        try {
+            parseSubmit(JSONObject(response), createdNew = code == HttpURLConnection.HTTP_CREATED)
+        } catch (e: JSONException) {
+            throw EnrollException.Malformed(e)
+        }
+    }
+
+    private fun parseSubmit(json: JSONObject, createdNew: Boolean): SubmitMessageResult {
+        val accepted = json.getJSONArray("acceptedRecipientDevices")
+        return SubmitMessageResult(
+            messageId = json.getString("messageId"),
+            conversationId = json.getString("conversationId"),
+            sequenceNumber = json.getLong("sequenceNumber"),
+            serverTimestamp = json.getString("serverTimestamp"),
+            acceptedRecipientDevices = List(accepted.length(), accepted::getString),
+            createdNew = createdNew,
+        )
+    }
+
+    /**
+     * Message-submit classifier. 403 here means sender spoof, inactive
+     * sender session-device, own-device/self recipient, or non-friend —
+     * never the enrollment recovery flow, so no reason-token mapping.
+     */
+    private fun classifySubmit(code: Int, response: String): EnrollException = when (code) {
+        HttpURLConnection.HTTP_UNAUTHORIZED -> EnrollException.Unauthorized()
+        HttpURLConnection.HTTP_BAD_REQUEST -> EnrollException.BadRequest()
+        HttpURLConnection.HTTP_FORBIDDEN -> EnrollException.Forbidden()
+        HttpURLConnection.HTTP_NOT_FOUND -> EnrollException.NotFound()
+        HttpURLConnection.HTTP_CONFLICT -> EnrollException.Conflict()
+        else -> EnrollException.ServerRejected()
+    }
+
     private fun parseRecipient(json: JSONObject): RecipientDeviceRecord = RecipientDeviceRecord(
         deviceId = json.getString("deviceId"),
         registrationId = json.getInt("registrationId"),

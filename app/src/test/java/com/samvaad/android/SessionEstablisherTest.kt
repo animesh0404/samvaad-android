@@ -114,6 +114,14 @@ class SessionEstablisherTest {
             claimRequestIds.add(requestId)
             return claimHandler(deviceId, requestId)
         }
+
+        override suspend fun submitMessage(
+            session: AuthSession,
+            serverAddress: String,
+            requestId: UUID,
+            envelopes: List<com.samvaad.android.enroll.MessageEnvelopeSubmit>,
+        ): com.samvaad.android.enroll.SubmitMessageResult =
+            throw AssertionError("no submission in this slice")
     }
 
     /** Remote device fixture: real libsignal public material as wire B64. */

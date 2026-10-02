@@ -110,4 +110,23 @@ interface E2eeDeviceApi {
         deviceId: String,
         requestId: java.util.UUID,
     ): ClaimedDeviceBundle
+
+    /**
+     * POST /api/e2ee/messages. Submits one logical message (exactly one
+     * envelope in this slice). Every `senderDeviceId` must equal the
+     * session-bound device or the server returns 403; the recipient must
+     * be an ACTIVE friend device or the server returns 404/403.
+     *
+     * Idempotency: resubmitting the same `requestId` with byte-identical
+     * envelopes replays the original response ([SubmitMessageResult]
+     * with `createdNew=false`); the same `requestId` with different
+     * content is a 409 [EnrollException.Conflict].
+     */
+    @Throws(IOException::class)
+    suspend fun submitMessage(
+        session: AuthSession,
+        serverAddress: String,
+        requestId: java.util.UUID,
+        envelopes: List<MessageEnvelopeSubmit>,
+    ): SubmitMessageResult
 }

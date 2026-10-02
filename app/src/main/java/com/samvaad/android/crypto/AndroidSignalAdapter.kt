@@ -499,6 +499,103 @@ class AndroidSignalAdapter {
         }
     }
 
+    /**
+     * Production outbound encryption for message submission (slice:
+     * message submission).
+     *
+     * Encrypts [plaintext] with `SessionCipher` on the sealed session,
+     * translates the actual `CiphertextMessage.getType()` into the
+     * Samvaad envelope type (never assumed), and returns the POST-encrypt
+     * `SessionRecord.serialize()` bytes alongside the wire bytes.
+     * Encryption advances the ratchet on every call, so the caller MUST
+     * seal [EncryptedMessage.postEncryptSessionBytes] BEFORE submitting
+     * the ciphertext — submitting first can fork the session after a
+     * crash or persistence failure.
+     *
+     * Ownership of both returned arrays transfers to the caller.
+     * @throws SessionCryptoException fail-closed, never partial state.
+     */
+    fun encryptForSubmit(
+        localIdentity: SpikeCryptoMaterial.Identity,
+        localRegistrationId: Int,
+        sessionBytes: ByteArray,
+        pinnedRemoteIdentity: ByteArray?,
+        remoteUsername: String,
+        remoteSignalDeviceId: Int,
+        plaintext: ByteArray,
+    ): EncryptedMessage {
+        require(plaintext.isNotEmpty()) { "plaintext must be non-empty" }
+        val localPair = requireIdentity(localIdentity.privateHandle)
+        val address = SignalProtocolAddress(remoteUsername, remoteSignalDeviceId)
+        val pinned: IdentityKey? = pinnedRemoteIdentity?.let {
+            try {
+                IdentityKey(it)
+            } catch (e: Exception) {
+                throw SessionCryptoException.InvalidBundle(e)
+            }
+        }
+        val store = EphemeralOutboundStore(
+            localPair, localRegistrationId, address, sessionBytes, pinned
+        )
+        try {
+            val wire = try {
+                SessionCipher(store, address).encrypt(plaintext)
+            } catch (e: UntrustedIdentityException) {
+                throw SessionCryptoException.UntrustedIdentity(e)
+            } catch (e: NoSessionException) {
+                throw SessionCryptoException.SessionCorrupt(e)
+            } catch (e: Exception) {
+                throw SessionCryptoException.EstablishmentFailed(e)
+            }
+            // `storeSession` already ran inside encrypt: the map holds the
+            // advanced record. Export it — this is the state the caller
+            // must seal before the ciphertext leaves the device.
+            val record = store.sessionFor(address)
+                ?: throw SessionCryptoException.EstablishmentFailed()
+            if (!record.hasSenderChain()) throw SessionCryptoException.EstablishmentFailed()
+            return EncryptedMessage(
+                ciphertextBytes = wire.serialize(),
+                envelopeType = envelopeTypeFor(wire.type),
+                postEncryptSessionBytes = record.serialize(),
+            )
+        } finally {
+            store.closeAll()
+        }
+    }
+
+    /**
+     * Translate the actual libsignal wire type into the Samvaad envelope
+     * type. Pure function of the observed type — callers must never assume
+     * which type an unacknowledged session produces. Unknown types fail
+     * closed: the message must not be submitted.
+     */
+    fun envelopeTypeFor(libsignalType: Int): String = when (libsignalType) {
+        PREKEY_TYPE -> ENVELOPE_PREKEY_INIT
+        WHISPER_TYPE -> ENVELOPE_RATCHET
+        else -> throw SessionCryptoException.EstablishmentFailed()
+    }
+
+    /** Encrypted outbound message plus the ratchet-advanced session state. */
+    data class EncryptedMessage(
+        val ciphertextBytes: ByteArray,
+        val envelopeType: String,
+        val postEncryptSessionBytes: ByteArray,
+    )
+
+    companion object {
+        /** libsignal `CiphertextMessage.PREKEY_TYPE` (3), read off the wire object. */
+        const val PREKEY_TYPE = 3
+
+        /** libsignal `CiphertextMessage.WHISPER_TYPE` (2), read off the wire object. */
+        const val WHISPER_TYPE = 2
+
+        /** Samvaad server `envelopeType` for prekey (first/unacknowledged) messages. */
+        const val ENVELOPE_PREKEY_INIT = "PREKEY_INIT"
+
+        /** Samvaad server `envelopeType` for acknowledged-session messages. */
+        const val ENVELOPE_RATCHET = "RATCHET"
+    }
+
     /** Canonical session bytes plus the embedded remote trust anchor. */
     data class EstablishedSession(
         val sessionBytes: ByteArray,
