@@ -36,4 +36,13 @@ sealed class SessionCryptoException(message: String, cause: Throwable? = null) :
      * session has no sender chain. */
     class SessionCorrupt(cause: Throwable? = null) :
         SessionCryptoException("stored session failed validation", cause)
+
+    /**
+     * The exact ciphertext was already processed against the persisted
+     * session state (experimentally proven: `DuplicateMessageException`
+     * with no store mutation). Not a failure — the caller must ACK
+     * without delivering plaintext again.
+     */
+    class DuplicateMessage(cause: Throwable? = null) :
+        SessionCryptoException("ciphertext already processed", cause)
 }

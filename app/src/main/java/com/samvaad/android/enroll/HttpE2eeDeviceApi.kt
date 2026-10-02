@@ -191,8 +191,76 @@ class HttpE2eeDeviceApi(
         }
     }
 
-    private fun parseSubmit(json: JSONObject, createdNew: Boolean): SubmitMessageResult {
-        val accepted = json.getJSONArray("acceptedRecipientDevices")
+    override suspend fun fetchMailbox(
+        session: AuthSession,
+        serverAddress: String,
+        limit: Int,
+    ): List<MailboxItem> = withContext(Dispatchers.IO) {
+        require(limit in 1..100) { "mailbox limit must be 1..100" }
+        val (code, response) = get(session, serverAddress, "/api/e2ee/mailbox?limit=$limit")
+        if (code != HttpURLConnection.HTTP_OK) {
+            throw classifyMailbox(code)
+        }
+        try {
+            val array = JSONArray(response)
+            List(array.length()) { i -> parseMailboxItem(array.getJSONObject(i)) }
+        } catch (e: JSONException) {
+            throw EnrollException.Malformed(e)
+        }
+    }
+
+    override suspend fun ackMailbox(
+        session: AuthSession,
+        serverAddress: String,
+        messageIds: List<java.util.UUID>,
+    ): Int = withContext(Dispatchers.IO) {
+        val ids = JSONArray()
+        messageIds.forEach { ids.put(it.toString()) }
+        val (code, response) = post(
+            session,
+            serverAddress,
+            "/api/e2ee/mailbox/ack",
+            JSONObject().put("messageIds", ids).toString(),
+        )
+        if (code != HttpURLConnection.HTTP_OK) {
+            throw classifyAck(code)
+        }
+        try {
+            JSONObject(response).getInt("acknowledged")
+        } catch (e: JSONException) {
+            throw EnrollException.Malformed(e)
+        }
+    }
+
+    private fun parseMailboxItem(json: JSONObject): MailboxItem = MailboxItem(
+        messageId = json.getString("messageId"),
+        conversationId = json.getString("conversationId"),
+        sequenceNumber = json.getLong("sequenceNumber"),
+        senderUserId = json.getString("senderUserId"),
+        senderDeviceId = json.getString("senderDeviceId"),
+        envelopeType = json.getString("envelopeType"),
+        ciphertextBase64 = json.getString("ciphertext"),
+        serverTimestamp = json.getString("serverTimestamp"),
+    )
+
+    /**
+     * Mailbox-fetch classifier. The server answers 200 (including `[]`
+     * for unbound sessions) or 401; no other fetch status exists, so
+     * anything else is an unexpected rejection.
+     */
+    private fun classifyMailbox(code: Int): EnrollException = when (code) {
+        HttpURLConnection.HTTP_UNAUTHORIZED -> EnrollException.Unauthorized()
+        else -> EnrollException.ServerRejected()
+    }
+
+    /** ACK classifier: bound-ACTIVE-device required, else 403. */
+    private fun classifyAck(code: Int): EnrollException = when (code) {
+        HttpURLConnection.HTTP_UNAUTHORIZED -> EnrollException.Unauthorized()
+        HttpURLConnection.HTTP_FORBIDDEN -> EnrollException.Forbidden()
+        else -> EnrollException.ServerRejected()
+    }
+
+    private fun parseSubmit(json: JSONObject, createdNew: Boolean): SubmitMessageResult {        val accepted = json.getJSONArray("acceptedRecipientDevices")
         return SubmitMessageResult(
             messageId = json.getString("messageId"),
             conversationId = json.getString("conversationId"),

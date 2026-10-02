@@ -385,6 +385,16 @@ class SessionRefresherTest {
                 envelopes: List<com.samvaad.android.enroll.MessageEnvelopeSubmit>,
             ): com.samvaad.android.enroll.SubmitMessageResult =
                 throw AssertionError("no submission in this slice")
+
+            override suspend fun fetchMailbox(
+                session: AuthSession, serverAddress: String, limit: Int,
+            ): List<com.samvaad.android.enroll.MailboxItem> =
+                throw AssertionError("no inbox in this slice")
+
+            override suspend fun ackMailbox(
+                session: AuthSession, serverAddress: String,
+                messageIds: List<java.util.UUID>,
+            ): Int = throw AssertionError("no inbox in this slice")
         }
         // Fresh instances throughout: restart-like conditions.
         val restored = runBlocking { SessionRefresher(auth, FileSessionStore(context, keys)).restoreSession() }

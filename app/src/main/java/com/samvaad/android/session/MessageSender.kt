@@ -15,9 +15,6 @@ import com.samvaad.android.enroll.MessageEnvelopeSubmit
 import com.samvaad.android.enroll.SubmitMessageResult
 import java.io.IOException
 import java.util.UUID
-import java.util.concurrent.ConcurrentHashMap
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 
 /**
  * Headless outbound message sender. Kept out of Compose by design;
@@ -46,9 +43,14 @@ class MessageSender(
     private val adapter: AndroidSignalAdapter,
     private val identityVault: AndroidCryptoVault,
     private val sessionVault: AndroidCryptoVault,
+    /**
+     * Shared per-device locks. MUST be the same holder instance the
+     * inbox processor uses: outbound encryption and inbound decryption
+     * mutate the same durable SessionRecord and must serialize per
+     * peer device. Defaults to a private holder (existing tests).
+     */
+    private val deviceLocks: SessionDeviceLocks = SessionDeviceLocks(),
 ) {
-    private val mapMutex = Mutex()
-    private val sendMutexes = ConcurrentHashMap<String, Mutex>()
 
     /**
      * Encrypt [plaintext] for exactly [remoteDeviceId] of
@@ -69,10 +71,7 @@ class MessageSender(
         if (plaintext.isEmpty()) {
             return SendResult.Failed(SendFailure.Rejected("empty-plaintext"))
         }
-        val deviceMutex = mapMutex.withLock {
-            sendMutexes.getOrPut(remoteDeviceId) { Mutex() }
-        }
-        return deviceMutex.withLock {
+        return deviceLocks.withDeviceLock(remoteDeviceId) {
             doSend(session, serverAddress, remoteUsername, remoteDeviceId, plaintext)
         }
     }

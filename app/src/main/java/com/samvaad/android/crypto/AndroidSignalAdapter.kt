@@ -6,12 +6,14 @@ import com.samvaad.android.crypto.SpikeCryptoMaterial.OneTimePrekey
 import com.samvaad.android.crypto.SpikeCryptoMaterial.SealedHandle
 import com.samvaad.android.crypto.SpikeCryptoMaterial.SignedPrekey
 import java.util.Arrays
+import org.signal.libsignal.protocol.DuplicateMessageException
 import org.signal.libsignal.protocol.IdentityKey
 import org.signal.libsignal.protocol.IdentityKeyPair
 import org.signal.libsignal.protocol.InvalidKeyException
 import org.signal.libsignal.protocol.InvalidKeyIdException
 import org.signal.libsignal.protocol.InvalidMessageException
 import org.signal.libsignal.protocol.NoSessionException
+import org.signal.libsignal.protocol.ReusedBaseKeyException
 import org.signal.libsignal.protocol.SessionBuilder
 import org.signal.libsignal.protocol.SessionCipher
 import org.signal.libsignal.protocol.SignalProtocolAddress
@@ -23,6 +25,8 @@ import org.signal.libsignal.protocol.groups.state.SenderKeyStore
 import org.signal.libsignal.protocol.kem.KEMKeyPair
 import org.signal.libsignal.protocol.kem.KEMKeyType
 import org.signal.libsignal.protocol.kem.KEMPublicKey
+import org.signal.libsignal.protocol.message.PreKeySignalMessage
+import org.signal.libsignal.protocol.message.SignalMessage
 import org.signal.libsignal.protocol.state.IdentityKeyStore
 import org.signal.libsignal.protocol.state.KyberPreKeyRecord
 import org.signal.libsignal.protocol.state.PreKeyBundle
@@ -603,6 +607,107 @@ class AndroidSignalAdapter {
         val remoteRegistrationId: Int,
     )
 
+    /**
+     * Production inbound decryption for mailbox consumption (slice:
+     * inbound decryption).
+     *
+     * Decrypts one mailbox envelope against the sealed session using the
+     * caller-restored local private records ([signed], [kyber], [otpks]:
+     * restored from the vault by the caller, so this method never touches
+     * storage). The server [envelopeType] is the discriminant —
+     * `"PREKEY_INIT"` parses as [PreKeySignalMessage], `"RATCHET"` as
+     * [SignalMessage]; anything else fails closed before any crypto runs.
+     * Unknown prekey IDs fail closed via [InvalidKeyIdException]; Kyber
+     * base-key reuse fails closed via [ReusedBaseKeyException] against an
+     * adapter-scoped record (the persisted session bytes remain the
+     * duplicate backstop across restarts).
+     *
+     * Returns the plaintext plus the POST-decrypt `SessionRecord`
+     * bytes the caller MUST seal before ACKing. A repeat of an already
+     * processed ciphertext throws [SessionCryptoException.DuplicateMessage]
+     * without mutating the store — the caller must ACK without
+     * delivering plaintext again.
+     *
+     * Ownership of returned arrays transfers to the caller.
+     * @throws SessionCryptoException fail-closed, never partial state.
+     */
+    fun decryptForInbox(
+        localIdentity: SpikeCryptoMaterial.Identity,
+        localRegistrationId: Int,
+        signed: SignedPrekey,
+        kyber: KyberPrekey,
+        otpks: List<OneTimePrekey>,
+        sessionBytes: ByteArray,
+        pinnedRemoteIdentity: ByteArray,
+        remoteUsername: String,
+        remoteSignalDeviceId: Int,
+        envelopeType: String,
+        ciphertext: ByteArray,
+    ): DecryptedMessage {
+        require(remoteUsername.isNotBlank()) { "remote username must be present" }
+        require(ciphertext.isNotEmpty()) { "ciphertext must be non-empty" }
+        if (envelopeType != ENVELOPE_PREKEY_INIT && envelopeType != ENVELOPE_RATCHET) {
+            throw SessionCryptoException.InvalidBundle()
+        }
+        val localPair = requireIdentity(localIdentity.privateHandle)
+        val address = SignalProtocolAddress(remoteUsername, remoteSignalDeviceId)
+        val pinned = try {
+            SpikeCryptoMaterial.requireCanonicalIdentityKey(pinnedRemoteIdentity)
+            IdentityKey(pinnedRemoteIdentity)
+        } catch (e: SessionCryptoException) {
+            throw e
+        } catch (e: Exception) {
+            throw SessionCryptoException.InvalidBundle(e)
+        }
+        val signedPair = requireSignedPair(signed.privateHandle, signed.prekeyId)
+        val kyberPair = requireKyberPair(kyber.privateHandle, kyber.prekeyId)
+        val otpkIndex = otpks.associate { it.prekeyId to it.privateHandle }
+        val store = InboundDecryptStore(
+            localPair, localRegistrationId, address, pinned,
+            signed.prekeyId, signedPair,
+            kyber.prekeyId, kyberPair,
+            otpkIndex,
+            sessionBytes,
+        )
+        try {
+            val plaintext: ByteArray = try {
+                val cipher = SessionCipher(store, address)
+                if (envelopeType == ENVELOPE_PREKEY_INIT) {
+                    cipher.decrypt(PreKeySignalMessage(ciphertext))
+                } else {
+                    cipher.decrypt(SignalMessage(ciphertext))
+                }
+            } catch (e: SessionCryptoException) {
+                throw e
+            } catch (e: DuplicateMessageException) {
+                throw SessionCryptoException.DuplicateMessage(e)
+            } catch (e: UntrustedIdentityException) {
+                throw SessionCryptoException.UntrustedIdentity(e)
+            } catch (e: NoSessionException) {
+                throw SessionCryptoException.SessionCorrupt(e)
+            } catch (e: Exception) {
+                throw SessionCryptoException.SessionCorrupt(e)
+            }
+            val record = store.sessionFor(address)
+                ?: throw SessionCryptoException.SessionCorrupt()
+            if (!record.hasSenderChain()) throw SessionCryptoException.SessionCorrupt()
+            return DecryptedMessage(
+                plaintext = plaintext,
+                postDecryptSessionBytes = record.serialize(),
+                remoteIdentityBytes = record.remoteIdentityKey.serialize(),
+            )
+        } finally {
+            store.closeAll()
+        }
+    }
+
+    /** Decrypted inbound message plus the advanced session state. */
+    data class DecryptedMessage(
+        val plaintext: ByteArray,
+        val postDecryptSessionBytes: ByteArray,
+        val remoteIdentityBytes: ByteArray,
+    )
+
     /** Remote trust anchor reported by [inspectSession]. */
     data class SessionInfo(
         val remoteIdentityBytes: ByteArray,
@@ -811,6 +916,181 @@ class AndroidSignalAdapter {
         ): SenderKeyRecord = throw NoSessionException("sender keys unsupported")
     }
 
+    /**
+     * Ephemeral inbound-capable [SignalProtocolStore] for one decrypt
+     * call. Unlike [EphemeralOutboundStore], the prekey stores are real:
+     * PREKEY decrypt natively loads the signed/OTPK/Kyber private records
+     * (RATCHET decrypt cannot reach them — libsignal never passes those
+     * stores on that path). OTK entries are consumed in-memory on success
+     * (durable OTK inventory stays with the vault/replenishment slices;
+     * repeats are independently rejected as duplicates by session state).
+     * No durability here — the caller seals the exported bytes.
+     */
+    private inner class InboundDecryptStore(
+        private val localPair: IdentityKeyPair,
+        private val localRegistrationId: Int,
+        address: SignalProtocolAddress,
+        pinnedIdentity: IdentityKey,
+        private val signedId: Int,
+        private val signedPair: ECKeyPair,
+        private val kyberId: Int,
+        private val kyberPair: KEMKeyPair,
+        private val otpkIndex: Map<Int, SealedHandle>,
+        seedSession: ByteArray,
+    ) : SignalProtocolStore {
+        private val sessions = mutableMapOf<SignalProtocolAddress, SessionRecord>()
+        private val identities = mutableMapOf<SignalProtocolAddress, IdentityKey>()
+        private val otpkCache = mutableMapOf<Int, ECKeyPair>()
+
+        init {
+            try {
+                sessions[address] = SessionRecord(seedSession)
+            } catch (e: InvalidMessageException) {
+                throw SessionCryptoException.SessionCorrupt(e)
+            } catch (e: Exception) {
+                throw SessionCryptoException.SessionCorrupt(e)
+            }
+            // Slice 8 only decrypts for sessions with a pinned identity:
+            // trust-on-first-use against the pin, never silent migration.
+            identities[address] = pinnedIdentity
+        }
+
+        fun sessionFor(address: SignalProtocolAddress): SessionRecord? = sessions[address]
+
+        fun closeAll() {
+            sessions.values.forEach { closeQuietly(it) }
+            sessions.clear()
+            otpkCache.clear()
+        }
+
+        override fun loadSession(address: SignalProtocolAddress): SessionRecord =
+            sessions[address] ?: throw NoSessionException("no session for inbound decrypt")
+
+        override fun loadExistingSessions(
+            addresses: List<SignalProtocolAddress>
+        ): List<SessionRecord> = addresses.mapNotNull { sessions[it] }
+
+        override fun getSubDeviceSessions(name: String): List<Int> =
+            sessions.keys.filter { it.name == name }.map { it.deviceId }
+
+        override fun storeSession(address: SignalProtocolAddress, record: SessionRecord) {
+            sessions[address] = record
+        }
+
+        override fun containsSession(address: SignalProtocolAddress): Boolean =
+            sessions.containsKey(address)
+
+        override fun deleteSession(address: SignalProtocolAddress) {
+            sessions.remove(address)?.let { closeQuietly(it) }
+        }
+
+        override fun deleteAllSessions(name: String) {
+            sessions.keys.filter { it.name == name }.forEach { deleteSession(it) }
+        }
+
+        override fun getIdentityKeyPair(): IdentityKeyPair = localPair
+
+        override fun getLocalRegistrationId(): Int = localRegistrationId
+
+        override fun saveIdentity(
+            address: SignalProtocolAddress,
+            identity: IdentityKey,
+        ): IdentityKeyStore.IdentityChange {
+            val existing = identities[address]
+            return if (existing == null ||
+                existing.serialize().contentEquals(identity.serialize())
+            ) {
+                identities[address] = identity
+                IdentityKeyStore.IdentityChange.NEW_OR_UNCHANGED
+            } else {
+                // Distrusted identities never reach here (isTrustedIdentity
+                // gates first); a mismatch is reported, never stored.
+                IdentityKeyStore.IdentityChange.REPLACED_EXISTING
+            }
+        }
+
+        override fun isTrustedIdentity(
+            address: SignalProtocolAddress,
+            identity: IdentityKey,
+            direction: IdentityKeyStore.Direction,
+        ): Boolean {
+            val existing = identities[address] ?: return false
+            return existing.serialize().contentEquals(identity.serialize())
+        }
+
+        override fun getIdentity(address: SignalProtocolAddress): IdentityKey =
+            identities[address] ?: throw NoSessionException("no pinned identity")
+
+        override fun loadPreKey(preKeyId: Int): PreKeyRecord {
+            val cached = otpkCache[preKeyId]
+            if (cached != null) return PreKeyRecord(preKeyId, cached)
+            val handle = otpkIndex[preKeyId] ?: throw InvalidKeyIdException("unknown one-time prekey")
+            requireKind(handle, CryptoRecordKind.ONE_TIME_PREKEY)
+            otpkCache[preKeyId] = requireOtpkPair(handle)
+            return PreKeyRecord(preKeyId, otpkCache.getValue(preKeyId))
+        }
+
+        override fun storePreKey(preKeyId: Int, record: PreKeyRecord) = Unit
+
+        override fun containsPreKey(preKeyId: Int): Boolean = otpkIndex.containsKey(preKeyId)
+
+        override fun removePreKey(preKeyId: Int) {
+            otpkCache.remove(preKeyId)
+        }
+
+        override fun loadSignedPreKey(signedPreKeyId: Int): SignedPreKeyRecord {
+            if (signedPreKeyId != signedId) throw InvalidKeyIdException("unknown signed prekey")
+            // Inbound DH consumes only the private half: the sender already
+            // verified this signature at establishment time, so the stored
+            // signature/timestamp are not reconstructed here.
+            val record = SignedPreKeyRecord(
+                signedId, System.currentTimeMillis(), signedPair, ByteArray(0)
+            )
+            return record
+        }
+
+        override fun loadSignedPreKeys(): List<SignedPreKeyRecord> = emptyList()
+
+        override fun storeSignedPreKey(signedPreKeyId: Int, record: SignedPreKeyRecord) = Unit
+
+        override fun containsSignedPreKey(signedPreKeyId: Int): Boolean = signedPreKeyId == signedId
+
+        override fun removeSignedPreKey(signedPreKeyId: Int) = Unit
+
+        override fun loadKyberPreKey(kyberPreKeyId: Int): KyberPreKeyRecord {
+            if (kyberPreKeyId != kyberId) throw InvalidKeyIdException("unknown kyber prekey")
+            // Same as above: inbound PQXDH consumes only the KEM private half.
+            return KyberPreKeyRecord(
+                kyberId, System.currentTimeMillis(), kyberPair, ByteArray(0)
+            )
+        }
+
+        override fun loadKyberPreKeys(): List<KyberPreKeyRecord> = emptyList()
+
+        override fun storeKyberPreKey(kyberPreKeyId: Int, record: KyberPreKeyRecord) = Unit
+
+        override fun containsKyberPreKey(kyberPreKeyId: Int): Boolean = kyberPreKeyId == kyberId
+
+        override fun markKyberPreKeyUsed(
+            kyberPreKeyId: Int,
+            signedPreKeyId: Int,
+            baseKey: ECPublicKey,
+        ) {
+            markKyberBaseKeyUsed(kyberPreKeyId, signedPreKeyId, baseKey)
+        }
+
+        override fun storeSenderKey(
+            sender: SignalProtocolAddress,
+            distributionId: java.util.UUID,
+            record: SenderKeyRecord,
+        ) = Unit
+
+        override fun loadSenderKey(
+            sender: SignalProtocolAddress,
+            distributionId: java.util.UUID,
+        ): SenderKeyRecord = throw NoSessionException("sender keys unsupported")
+    }
+
     private fun requireKind(handle: SealedHandle, kind: CryptoRecordKind) {
         require(handle.kind == kind) { "handle kind mismatch" }
     }
@@ -820,6 +1100,43 @@ class AndroidSignalAdapter {
             ?: throw CryptoRecoveryException(
                 "identity private material unavailable in this process"
             )
+
+    private fun requireSignedPair(handle: SealedHandle, expectedId: Int): ECKeyPair {
+        val entry = (privateHandles[handle] as? StoredKey.SignedEntry)
+            ?: throw CryptoRecoveryException("signed-prekey material unavailable in this process")
+        if (entry.id != expectedId) throw CryptoRecoveryException("signed-prekey id drift")
+        return entry.pair
+    }
+
+    private fun requireKyberPair(handle: SealedHandle, expectedId: Int): KEMKeyPair {
+        val entry = (privateHandles[handle] as? StoredKey.KyberEntry)
+            ?: throw CryptoRecoveryException("kyber material unavailable in this process")
+        if (entry.id != expectedId) throw CryptoRecoveryException("kyber-prekey id drift")
+        return entry.pair
+    }
+
+    private fun requireOtpkPair(handle: SealedHandle): ECKeyPair =
+        (privateHandles[handle] as? StoredKey.OtpkEntry)?.pair
+            ?: throw CryptoRecoveryException("one-time-prekey material unavailable in this process")
+
+    /**
+     * Consumed Kyber base keys `(kyberId, signedPrekeyId, baseKey)` seen by
+     * [InboundDecryptStore.markKyberPreKeyUsed]. Process- and
+     * adapter-scoped: a repeat within one process fails fast with
+     * [ReusedBaseKeyException]; across restarts the persisted session
+     * bytes remain the duplicate backstop (proven: repeats throw
+     * `DuplicateMessageException` before key loading matters).
+     */
+    private val usedKyberBaseKeys = mutableSetOf<String>()
+
+    private fun markKyberBaseKeyUsed(kyberId: Int, signedId: Int, baseKey: ECPublicKey) {
+        val marker = "$kyberId:$signedId:" + baseKey.serialize().let {
+            java.util.Base64.getEncoder().encodeToString(it)
+        }
+        if (!usedKyberBaseKeys.add(marker)) {
+            throw ReusedBaseKeyException("kyber base key reuse")
+        }
+    }
 
     private fun closeQuietly(value: Any?) {
         if (value is AutoCloseable) {

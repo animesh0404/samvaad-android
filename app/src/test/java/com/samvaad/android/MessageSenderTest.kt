@@ -122,6 +122,19 @@ class MessageSenderTest {
             submits.add(SubmitCall(requestId, envelopes.map { it.copy() }))
             return submitHandler(requestId, envelopes)
         }
+
+        override suspend fun fetchMailbox(
+            session: AuthSession,
+            serverAddress: String,
+            limit: Int,
+        ): List<com.samvaad.android.enroll.MailboxItem> =
+            throw AssertionError("no inbox in this slice")
+
+        override suspend fun ackMailbox(
+            session: AuthSession,
+            serverAddress: String,
+            messageIds: List<UUID>,
+        ): Int = throw AssertionError("no inbox in this slice")
     }
 
     private data class RemoteFixture(

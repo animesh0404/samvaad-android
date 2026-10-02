@@ -129,4 +129,31 @@ interface E2eeDeviceApi {
         requestId: java.util.UUID,
         envelopes: List<MessageEnvelopeSubmit>,
     ): SubmitMessageResult
+
+    /**
+     * GET /api/e2ee/mailbox?limit=N. Returns this session-bound device's
+     * undelivered ciphertext in stable server acceptance order (bare JSON
+     * array, possibly empty). [limit] is 1..100. Sessions without a bound
+     * device see an empty mailbox (HTTP 200), never an error.
+     */
+    @Throws(IOException::class)
+    suspend fun fetchMailbox(
+        session: AuthSession,
+        serverAddress: String,
+        limit: Int = 20,
+    ): List<MailboxItem>
+
+    /**
+     * POST /api/e2ee/mailbox/ack with `{"messageIds": [...]}`. Deletes
+     * only this bound device's entries; unknown/foreign IDs acknowledge
+     * nothing. Returns the deleted-row count. Idempotent: repeating an
+     * ACK returns 0 for already-deleted entries. Requires the session
+     * bound to an ACTIVE device (else 403).
+     */
+    @Throws(IOException::class)
+    suspend fun ackMailbox(
+        session: AuthSession,
+        serverAddress: String,
+        messageIds: List<java.util.UUID>,
+    ): Int
 }
