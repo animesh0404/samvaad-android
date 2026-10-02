@@ -40,23 +40,15 @@ The previously referenced `docs/api/android-integration-checklist.md` is not cur
 
 ## Current server/client boundary
 
-The server currently provides the E2EE foundation and durable ciphertext history used as a transition state. Android has not integrated it yet.
+Android currently consumes existing server contracts for:
 
-The target architecture is:
+- authentication and refresh/logout;
+- first-device E2EE enrollment and initial OTPK upload;
+- recipient device discovery;
+- recipient OTPK claiming.
 
-```
-Android Primary
-    |
-    | E2EE history synchronization
-    v
-Future Web Companions
+Android has not yet integrated the server's ciphertext message submission, mailbox, history/cursor, or realtime delivery surfaces.
 
-Server
-    |
-    +-- bounded delivery/replay buffer (target)
-    +-- device/mailbox/realtime transport
-```
-
-The exact retention policy and history-sync protocol remain undefined.
+The server remains cryptographically blind. The current server-side durable ciphertext history is a transition-state mechanism, while the target architecture moves long-term history authority to the Android Primary.
 
 No Android-specific server endpoints are authorized by this document.

@@ -43,33 +43,17 @@ In-memory access/refresh tokens and the sessionId are therefore runtime
 secrets: the fixed safe UI messages must never carry server text, HTTP
 internals, or credential material.
 
-## Required boundaries for future slices
+## Current security rules for future slices
 
-When authentication is introduced:
-
-- never log passwords, access tokens, refresh tokens, recovery codes, or private cryptographic material;
-- do not persist credentials in plaintext;
-- follow the server's existing session/authentication contracts;
-- keep authentication/session state separate from cryptographic device state.
-
-When E2EE/device enrollment is introduced:
-
-- private keys must be generated and retained on the client;
-- private keys must never be sent to the server;
-- the server remains cryptographically blind;
-- device role must be consumed from the server's read-only device representation; Android must not self-declare PRIMARY/COMPANION;
-- enrollment must reuse (never regenerate) local identity on uncertain
-  outcomes; ambiguous server state reconciles via identity-pubkey match
-  or fails closed;
-- recovery codes are display-once transients: never persisted, logged,
-  or vaulted; crash-before-acknowledgment leaves an Active-unacked
-  device, never re-issued codes.
-
-When Primary history ownership is introduced:
-
-- durable local conversation history becomes security-sensitive application data;
-- backup/restore semantics must be designed before enabling Android backup for such data;
-- the future Companion history-sync protocol must remain E2EE.
+- Never log passwords, access tokens, refresh tokens, recovery codes, or private cryptographic material.
+- Do not persist credentials in plaintext.
+- Keep authentication/session state separate from cryptographic device state.
+- The server assigns PRIMARY/COMPANION roles; Android must never self-declare a role.
+- Private keys are generated and retained on the client; private keys are never sent to the server.
+- Enrollment uncertain outcomes reconcile against server device state and never regenerate identity merely because a request failed.
+- Recovery codes remain display-once transients.
+- Outbound session establishment verifies signed-prekey and Kyber signatures locally, pins the remote identity, and fails closed on identity/session-state mismatch.
+- A claimed OTPK is never reused after a failed post-claim establishment attempt.
 
 ## Current template caveat
 
@@ -85,8 +69,13 @@ persistent credentials, message history, or any backup-eligible store.
 
 Not yet implemented/locked:
 
+- user-facing identity verification/fingerprint and trust-state workflow;
+- OTPK replenishment trigger and Kyber rotation;
 - wrapping-key rotation and lifecycle policy;
 - encrypted backup/restore;
-- final history-sync protocol;
+- inbound message/decryption security boundaries;
+- mailbox/history/cursor security model;
 - push-notification security/privacy design;
-- final server retention/liveness policies.
+- final server retention/liveness policies;
+- Primary-to-Companion history-sync security/protocol design;
+- AGPL-3.0-only libsignal distribution decision.

@@ -6,9 +6,15 @@ Android is the **PRIMARY product device**. Web is a future COMPANION client. TUI
 
 ## Current state
 
-Slice 0 (repository bootstrap), Slice 1 (basic Samvaad entry UI), and Slice 2 (authentication boundary) are complete. The app is a single-`:app`-module Compose application showing the Samvaad entry screen: branding/title, server address, username, and password inputs, and a Continue action backed by local UI state. Continue performs a real `POST /api/auth/login` with `clientPlatform: "ANDROID"` and keeps the returned access/refresh tokens and sessionId only in an in-memory session; a minimal "Signed in as …" state proves success.
+Slices 0–6 are complete.
 
-No Samvaad device enrollment, E2EE, local message storage, navigation, ViewModel, DI, background work, push, history synchronization, persistent credentials, or automatic token refresh has been implemented yet.
+The app is a single-`:app`-module Compose application with Samvaad branding, real HTTPS authentication, durable authenticated-session restart handling, first-device E2EE enrollment, durable libsignal device/prekey/Kyber material, and outbound Signal session establishment.
+
+The current Android E2EE path is:
+
+`login → durable session → first-device enrollment → recipient device discovery → OTPK/signed-prekey claim → client-side signed-prekey + Kyber verification → libsignal SessionBuilder → durable SessionRecord`.
+
+The Android client does **not** yet send or receive chat messages. Message submission, mailbox/decryption, history, realtime delivery, synchronization, Companion approval/recovery UX, and Primary-owned history are later slices.
 
 ## Baseline
 
@@ -35,7 +41,7 @@ Current public server baseline:
 
 This baseline enforces server-assigned device roles: one non-revoked PRIMARY and up to four non-revoked COMPANIONS, within the five-device non-revoked limit.
 
-The server already has E2EE device/enrollment, prekey/recovery, ciphertext transport, mailbox, history, synchronization-cursor, and device-level realtime foundations. Android has not integrated them yet.
+The server already has E2EE device/enrollment, prekey/recovery, recipient-device discovery, OTPK claim, ciphertext transport, mailbox, history, synchronization-cursor, and device-level realtime foundations. Android currently consumes the authentication, enrollment, recipient discovery, and OTPK-claim contracts; message-transport surfaces are not integrated yet.
 
 The server's durable ciphertext history is a **transition state**. The target architecture makes the Android Primary the durable history authority and uses the server as a bounded delivery/replay layer. Retention/eviction and the Primary-to-Companion history-sync protocol are not yet locked.
 

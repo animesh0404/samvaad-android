@@ -1,6 +1,6 @@
 # Architecture Current State
 
-Date: 2026-10-01.
+Date: 2026-10-02.
 
 This document describes the Android repository as it exists now. It does not describe future architecture as implemented behavior.
 
@@ -62,28 +62,17 @@ This document describes the Android repository as it exists now. It does not des
 
 ## Not implemented
 
-The Android app currently has none of the following:
-
-- network transport: login/refresh/logout plus E2EE device
-  enrollment/prekey calls (`HttpURLConnection`, no WebSocket, no other
-  API clients)
-- automatic token refresh (launch-time refresh exists; no background
-  refresh, no generic 401 middleware)
-- enrollment beyond first-device bootstrap (companion approval, recovery
-  enrollment/entry/rotation, revocation); server device state remains
-  authoritative and is re-read, never trusted from the local cache
-- E2EE session/messaging integration (enrollment exists; no Signal
-  sessions, transport, or history yet)
-- wrapping-key rotation and lifecycle policy (the single Keystore
-  wrapping key has no rotation yet by design)
-- recovery-code handling beyond transient first-bootstrap display
-- local database or durable message store
-- mailbox/history/cursor synchronization
-- navigation between product screens
-- ViewModel or dependency-injection framework
-- background work
-- push notifications
-- Primary-to-Companion history synchronization
+- Message transport: no `POST /api/e2ee/messages`, mailbox consumption/acknowledgment, history reads, synchronization-cursor reconciliation, or WebSocket/STOMP integration.
+- Inbound Signal message decryption and receive-side session handling.
+- Automatic/background token refresh beyond launch-time restoration; no generic 401 middleware.
+- Enrollment beyond first-device bootstrap: Companion approval UI, recovery enrollment/entry/rotation, and revocation UX.
+- OTPK replenishment trigger and Kyber rotation flow.
+- Identity verification/fingerprint UI and a user-facing trust-state machine.
+- Local conversation/message database or durable message store.
+- Navigation, ViewModel, dependency injection, background work, and push notifications.
+- Primary-to-Companion history synchronization.
+- Wrapping-key rotation/lifecycle policy.
+- Encrypted backup/restore.
 
 ## Server architecture relevant to Android
 

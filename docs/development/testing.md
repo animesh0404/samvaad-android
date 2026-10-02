@@ -2,47 +2,32 @@
 
 ## What exists
 
-- `app/src/test/.../EntryScreenTest.kt`: Slice 1 Robolectric-based Compose
-  UI tests for observable entry-screen behavior (branding, inputs,
-  text entry), extended in Slice 2 with a fake `AuthApi` boundary:
-  empty/invalid submission issues no request, request shape
-  (server/identifier/password/`ANDROID`), success/failure UI, token and
-  password non-rendering, and duplicate-submit prevention. Slice 3 adds
-  transition coverage: success reaches the home surface with the
-  identifier, failure stays on the entry form. No live server
-  required. Test infrastructure only, not production architecture.
-- `app/src/test/.../ExampleUnitTest.kt`: template host test
-  (`assertEquals(4, 2 + 2)`).
-- `app/src/test/.../EnrollmentCoordinatorTest.kt`: fake-`E2eeDeviceApi`
-  coordinator tests — bootstrap success, duplicate-submit guard,
-  generate-once/reuse-after-failure, marker-before-POST, metadata
-  persistence, exactly-100 OTPK upload only when ACTIVE, PENDING
-  no-upload, 409-reconcile adopt/none/multiple, transport-failure
-  retention, no-regeneration, identity-mismatch and recovery-required
-  handling, secrets-never-persisted scans, metadata≠authority.
-- `app/src/test/.../HttpE2eeDeviceApiTest.kt`: `ServerSocket`-stub
-  transport tests — exact POST/PUT JSON, Base64, `ANDROID`, HTTPS-only,
-  Bearer auth, 201/400/401/403+reason/409/malformed/transport mapping.
-- `app/src/test/.../CryptoVaultUnitTest.kt`,
-  `DeviceMetadataStoreTest.kt`, `PrekeyIdAllocatorTest.kt`: envelope/AAD,
-  corruption/isolation/no-plaintext, metadata round-trip/schema/corrupt
-  tolerance, allocator monotonicity/namespaces.
-- `app/src/test/.../SessionStoreTest.kt`, `SessionRefresherTest.kt`,
-  `AuthRefreshLogoutTest.kt`, `SessionGateTest.kt`: session envelope
-  round-trip/no-plaintext, restore/rotate/reject/corrupt/missing-key,
-  single-flight concurrency, logout wipe + device-state preservation,
-  refresh/logout transport mapping, gate restoring/login/logout UI,
-  login persistence incl. store-failure fallback.
-- `app/src/androidTest/.../CryptoVaultInstrumentedTest.kt`,
-  `CryptoVaultRestartInstrumentedTest.kt`: Keystore round-trip,
-  fail-closed corruption/missing-key, force-stop and physical-reboot
-  recovery on emulator + physical Pixel 6a.
-- `app/src/androidTest/.../SessionStoreInstrumentedTest.kt`,
-  `SessionRestartInstrumentedTest.kt`: Keystore session round-trip,
-  fail-closed corruption, namespace isolation, force-stop and
-  physical-reboot recovery on emulator + physical Pixel 6a.
-- `app/src/androidTest/.../ExampleInstrumentedTest.kt`: template package-name
-  check. Requires device/emulator; not part of the slice gate.
+- `app/src/test/.../EntryScreenTest.kt`: Slice 1 Robolectric-based Compose UI tests for observable entry-screen behavior, extended through authentication/session slices.
+- `app/src/test/.../EnrollmentCoordinatorTest.kt`: first-device bootstrap reconciliation, generation/reuse, marker ordering, OTPK provisioning, recovery-code acknowledgment, no-regeneration, and fail-closed tests.
+- `app/src/test/.../HttpE2eeDeviceApiTest.kt`: enrollment/prekey transport tests using `ServerSocket` stubs.
+- `app/src/test/.../CryptoVaultUnitTest.kt`, `DeviceMetadataStoreTest.kt`, `PrekeyIdAllocatorTest.kt`: crypto envelope/AAD, corruption/isolation/no-plaintext, metadata, and allocator coverage.
+- `app/src/test/.../SessionStoreTest.kt`, `SessionRefresherTest.kt`, `AuthRefreshLogoutTest.kt`, `SessionGateTest.kt`: durable auth-session restore/rotation/rejection/logout and root-gate coverage.
+- `app/src/test/.../SessionCryptoTest.kt`: real libsignal outbound session construction, signature verification, TOFU behavior, SessionRecord readiness, and encrypt-probe coverage.
+- `app/src/test/.../HttpSessionDirectoryApiTest.kt`: recipient-directory and OTPK-claim HTTP contract tests including authorization/status/error parsing, fallback responses, request IDs, malformed protocol responses, and HTTPS enforcement.
+- `app/src/test/.../SessionEstablisherTest.kt`: reuse-first behavior, explicit device selection, claim-burn semantics, fresh-requestId retry, single-flight concurrency, durable metadata/blob consistency, AAD isolation, and identity pinning.
+- `app/src/androidTest/.../CryptoVaultInstrumentedTest.kt`, `CryptoVaultRestartInstrumentedTest.kt`: Keystore round-trip, fail-closed corruption/missing-key, force-stop and physical-reboot recovery.
+- `app/src/androidTest/.../SessionStoreInstrumentedTest.kt`, `SessionRestartInstrumentedTest.kt`: durable auth-session recovery.
+- `app/src/androidTest/.../SignalSessionRestartInstrumentedTest.kt`: real Android libsignal + Keystore-backed SessionRecord persistence, corrupt/missing-state fail-closed behavior, no-plaintext scan, force-stop recovery, and encryption after restoration.
+- `app/src/androidTest/.../ExampleInstrumentedTest.kt`: template package-name check.
+
+## Current Slice 6 verification
+
+The Slice 6 implementation was committed as `1f935d2` and verified before push.
+
+- Host unit suite: `164/164` pass.
+- Slice 6 instrumented class: `5/5` pass on the API 33 emulator.
+- Force-stop two-phase restart recovery: passed on the API 33 emulator.
+- The same restart/recovery proof, including encryption after restoration, was previously completed on the physical Pixel 6a (arm64, API 37).
+- Debug and Android-test APK builds succeeded offline.
+- `git diff --check` was clean before commit.
+- No live server is required by the automated test suites.
+
+The existing `CryptoVaultInstrumentedTest` has a pre-existing exact-count assertion that can be state-sensitive across repeated installs; fresh-state runs are the expected test condition. This is separate from Slice 6 logic.
 
 ## Test-only harness notes (Slice 1)
 
@@ -57,18 +42,16 @@
   espresso-idling-resource calls the hidden `InputManager.getInstance()`,
   which is absent from Robolectric's SDK 37 runtime jar.
 
-## Commands (run from repo root)
+## Commands
 
 ```bash
 ./gradlew :app:testDebugUnitTest
 ./gradlew :app:assembleDebug
+./gradlew :app:assembleDebugAndroidTest
 git diff --check
 ```
 
-Slice gate is `assembleDebug` + `testDebugUnitTest` + `diff --check`.
-Instrumented tests run on the Pixel 6a API 33 x86_64 emulator and the
-physical Pixel 6a where a slice exercises Keystore/natives; no live
-server is used by any test.
+For native/Keystore slices, run the relevant instrumented tests on the Pixel 6a API 33 x86_64 emulator and, when available, the physical Pixel 6a.
 
 ## Policy
 

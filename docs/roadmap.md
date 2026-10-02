@@ -74,40 +74,46 @@ DONE.
 
 DONE.
 
-- Refresh-token session bundle (server address, identifier, refresh
-  token, session ID, refresh expiry) sealed under the existing Keystore
-  wrapping key in a separate no-backup namespace; access tokens stay
-  memory-only. Launch-time silent refresh with single-flight rotation;
-  rejection wipes the record and returns to login with a safe message.
-- First logout affordance on `HomeScreen`: best-effort server revocation,
-  unconditional local wipe (even offline), device/crypto state
-  untouched so a later login reconciles the existing identity.
-- Root `SessionGate` (no navigation framework) routes launch to Home or
-  login. Multi-account, background refresh, biometric lock, and generic
-  401 middleware remain out of scope (ADR 0006).
+- Refresh-token session bundle is sealed under the existing Keystore wrapping key in a separate no-backup namespace; access tokens remain memory-only.
+- Launch-time silent refresh uses single-flight rotation.
+- Logout best-effort revokes the server session and always wipes the local auth-session record without touching device/crypto state.
+- Root `SessionGate` restores Home or returns to login without introducing a navigation framework.
+
+### Slice 6 — Outbound Signal session establishment
+
+DONE.
+
+- Recipient devices are discovered through the existing `GET /api/e2ee/users/{username}/devices` contract.
+- Establishment targets exactly one explicit remote `deviceId`; multiple ACTIVE devices are never auto-selected.
+- Each OTPK claim uses a fresh UUID `requestId`; a bounded conflict retry uses a new request ID.
+- Signed-prekey and Kyber signatures are verified locally before libsignal processing. Missing Kyber is rejected for this path.
+- `SignalProtocolAddress` uses `(remoteUsername, remoteSignalDeviceId)` for Android V1.
+- `SessionBuilder.process()` creates the outbound session and `hasSenderChain()` gates readiness.
+- The canonical `SessionRecord.serialize()` bytes are sealed as `SESSION (0x05)` under the existing Keystore wrapping key. Remote session metadata is stored separately and pins the remote identity.
+- Valid sessions are reused without a second claim or session build. Failed post-claim establishment never reuses the claimed OTPK.
+- Restart recovery has been proven on the emulator and physical Pixel 6a, including encryption after restoration.
+- This slice does not send a message; it proves durable outbound session readiness.
 
 ## Next
 
-The next slice follows the existing sequencing direction below
-(item 2 under "Subsequent planned slices"). No implementation contract
-for it is defined yet; do not start it without an explicit slice
-definition.
+### Slice 7 — Outbound encrypted message submission
+
+The next implementation slice should connect an already-established Signal session to the existing server ciphertext-submission contract.
+
+The slice must remain narrow: construct a real encrypted Signal ciphertext for an explicitly selected remote device and submit the corresponding PREKEY_INIT/RATCHET envelope through the existing server API. Message UI, inbound mailbox/decryption, conversation history, realtime delivery, and synchronization remain separate slices.
+
+Do not start it without an explicit implementation contract and codebase audit.
 
 ## Subsequent planned slices
 
-These are sequencing directions, not already-defined implementation contracts.
+8. Inbound mailbox consumption and Signal decryption.
+9. Mailbox acknowledgment and conversation/history/cursor reconciliation.
+10. Existing-device Companion approval and recovery UX.
+11. Primary-owned durable conversation history.
+12. Primary-to-Companion history synchronization once its protocol is defined.
+13. Web Companion client after the Android Primary vertical slice.
 
-1. Entry/authentication boundary against the existing server authentication contract.
-2. First-device bootstrap and E2EE enrollment.
-3. Secure persistent device/cryptographic state.
-4. Existing-device approval and recovery flows.
-5. E2EE session establishment and encrypted message transport.
-6. Mailbox, history, acknowledgement, and synchronization-cursor reconciliation.
-7. Primary-owned durable conversation history.
-8. Primary-to-Companion history synchronization when its protocol is defined.
-9. Web Companion client after the Android Primary vertical slice.
-
-A slice must stop and surface an architectural decision if the required server contract or client-side security design is not already defined.
+These are sequencing directions, not permission to implement future protocol details early.
 
 ## Explicitly deferred
 
