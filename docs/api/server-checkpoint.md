@@ -45,9 +45,14 @@ Android currently consumes existing server contracts for:
 - authentication and refresh/logout;
 - first-device E2EE enrollment and initial OTPK upload;
 - recipient device discovery;
-- recipient OTPK claiming.
+- recipient OTPK claiming;
+- ciphertext message submission;
+- device-scoped mailbox fetch;
+- per-message mailbox acknowledgment.
 
-Android has not yet integrated the server's ciphertext message submission, mailbox, history/cursor, or realtime delivery surfaces.
+For mailbox consumption, Android uses the existing `GET /api/e2ee/mailbox?limit=N` and `POST /api/e2ee/mailbox/ack` contracts. These are existing server endpoints; Android introduces no server API for Slice 8. Mailbox fetch is scoped to the authenticated session's bound device, and ACK is scoped/idempotent per device. Android persists the post-decrypt Signal SessionRecord before issuing an ACK.
+
+Android has not yet integrated server history reads, synchronization cursors, or realtime delivery as client features.
 
 The server remains cryptographically blind. The current server-side durable ciphertext history is a transition-state mechanism, while the target architecture moves long-term history authority to the Android Primary.
 

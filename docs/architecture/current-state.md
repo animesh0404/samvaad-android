@@ -14,62 +14,35 @@ This document describes the Android repository as it exists now. It does not des
 - Gradle Kotlin DSL with version catalog.
 - AGP `9.4.1`, Kotlin `2.2.10`, Compose BOM `2026.02.01`, Gradle `9.6.0`.
 - `minSdk 30`, `compileSdk 37`, `targetSdk 37`.
-- The current UI is the Slice 1 Samvaad entry screen: Samvaad
-  branding/title, server address input, username input, password input,
-  and a Continue action. Inputs are local Compose UI state only.
-- Slice 2 authentication: Continue performs a real HTTP
-  `POST /api/auth/login` against the configured server address
-  (`HttpURLConnection` + `org.json`; no networking library) with
-  `clientPlatform: "ANDROID"`, explicit-null `installationId`, and the
-  optional `clientName`/`clientVersion` omitted. Success keeps an
-  in-memory `AuthSession` (access/refresh tokens, sessionId) and
-  transitions to a placeholder `HomeScreen` showing only the
-  authenticated identifier plus an explicit device-setup placeholder;
-  the session object never reaches UI code. The password is cleared
-  from UI state on success. Failures show fixed safe messages;
-  duplicate submissions are guarded.
-- Host unit tests include Slice 1 Robolectric-based Compose UI tests
-  (`EntryScreenTest`: branding, inputs, text entry) extended in Slice 2
-  with a fake `AuthApi` boundary (request shape, success/failure UI,
-  no-leak, duplicate-submit) alongside the generated `ExampleUnitTest`
-  template. The instrumented package-name template remains. The
-  Robolectric setup is test infrastructure only, not production
-  architecture.
+- The current UI is the Samvaad entry screen with server address, username, password, and Continue action. Input values are local Compose UI state until authentication succeeds.
+- Authentication uses `POST /api/auth/login` with `clientPlatform: "ANDROID"` over HTTPS. The live `AuthSession` remains an in-memory runtime object while its refresh bundle is sealed for restart recovery by the Slice 5 session store.
+- The authenticated root uses `SessionGate` to restore the durable refresh session and routes between login and the authenticated Home boundary without a navigation framework.
+- Host UI/unit tests cover the entry/auth/session boundaries with fakes and deterministic synchronization.
 - The bootstrap has been verified to build and launch on a Pixel 6a API 33 emulator.
-- Local-only libsignal feasibility spike (ADR 0003): `AndroidSignalAdapter`
-  isolates `org.signal:libsignal-*` 0.86.5 and proves in-memory generation
-  of identity/signed-prekey/Kyber/OTPK material with libsignal
-  parse/verify semantics on the Pixel 6a API 33 x86_64 emulator and a
-  physical Pixel 6a (arm64-v8a). No enrollment, no persistence, no
-  messaging; AGPL distribution decision outstanding.
-- Keystore-backed crypto vault (ADR 0004): `AndroidCryptoVault` seals
-  libsignal record blobs under a non-exportable AES-256-GCM Keystore
-  wrapping key into `getNoBackupFilesDir()`; fail-closed on
-  missing-key/corruption/version mismatch; restart- and reboot-proven.
-- First-device bootstrap enrollment (ADR 0005): `EnrollmentCoordinator`
-  drives `POST /api/e2ee/devices` on the login session (reconcile-first,
-  attempt marker, `409`-as-reconcile-trigger), uploads exactly 100 OTPKs
-  when ACTIVE, and shows the 25 first-bootstrap recovery codes once with
-  explicit acknowledgment. Companion approval, recovery flows, and
-  messaging do not exist.
-- Durable refresh-token session (ADR 0006): `FileSessionStore` seals
-  the refresh bundle (server address, identifier, refresh token,
-  session ID, refresh expiry) under the same Keystore wrapping key in a
-  separate `getNoBackupFilesDir()/session/` namespace; access tokens stay
-  memory-only. `SessionRefresher` restores on launch with single-flight
-  rotation, wipes on rejection, and never touches device/crypto state on
-  logout. Root `SessionGate` routes to Home or login with safe messages.
+- Local-only libsignal feasibility spike (ADR 0003): `AndroidSignalAdapter` isolates `org.signal:libsignal-*` 0.86.5 and proves in-memory generation and parsing/verification of identity, signed-prekey, Kyber, and OTPK material on emulator and physical Pixel 6a. The AGPL distribution decision remains outstanding.
+- Keystore-backed crypto vault (ADR 0004): `AndroidCryptoVault` seals libsignal record blobs under a non-exportable AES-256-GCM Keystore wrapping key into `getNoBackupFilesDir()`, with fail-closed corruption/missing-key handling and restart/reboot proof.
+- First-device bootstrap enrollment (ADR 0005): `EnrollmentCoordinator` performs reconcile-first enrollment on the authenticated session, uploads exactly 100 OTPKs when ACTIVE, and exposes the 25 first-bootstrap recovery codes once with explicit acknowledgment. Companion approval and recovery UX remain absent.
+- Durable refresh-token session (ADR 0006): `FileSessionStore` seals the refresh bundle in a separate no-backup namespace; access tokens remain memory-only. `SessionRefresher` performs launch-time single-flight refresh/rotation. Logout wipes only the auth-session record and leaves device/crypto state intact.
+- Outbound Signal session establishment (ADR 0007): recipient device discovery and OTPK claim produce a validated, pinned `SignalProtocolAddress(remoteUsername, remoteSignalDeviceId)` session. The durable `SessionRecord` is sealed before remote session metadata is recorded, and valid sessions are reused without rediscovery/claim.
+- Slice 7 outbound encrypted message submission: `MessageSender` loads an existing established session, encrypts with real libsignal, persists the post-encrypt `SessionRecord` before HTTP submission, submits the existing server ciphertext envelope, and retries an ambiguous transport outcome with the same in-memory request bytes/request ID rather than re-encrypting.
+- Slice 8 inbound mailbox consumption and Signal decryption: `InboxProcessor` fetches a small device-scoped mailbox batch, resolves each `senderDeviceId` against an existing `SignalSessionEntry`, selects `PREKEY_INIT` vs `RATCHET` from the server-supplied envelope type, decrypts through real libsignal 0.86.5, seals the post-decrypt `SessionRecord`, and only then acknowledges that message ID.
+- Inbound duplicate processing is explicit: a libsignal `DuplicateMessageException` is treated as proof that the message was already processed, so it is acknowledged without delivering plaintext again. Other decrypt/persistence failures remain unacknowledged for redelivery.
+- Outbound and inbound session mutation share the same per-remote-device `SessionDeviceLocks` holder so one `SessionRecord` cannot be mutated concurrently in opposite directions.
+- Inbound identity remains pinned to the existing remote session metadata; changed/mismatched identity fails closed. Unknown `senderDeviceId` entries are skipped without discovery, OTPK claim, or session creation.
+- Slice 8 keeps plaintext memory-only and does not introduce message/conversation persistence, history, synchronization, realtime, background polling, or UI.
 
 ## Not implemented
 
-- Message transport: no `POST /api/e2ee/messages`, mailbox consumption/acknowledgment, history reads, synchronization-cursor reconciliation, or WebSocket/STOMP integration.
-- Inbound Signal message decryption and receive-side session handling.
-- Automatic/background token refresh beyond launch-time restoration; no generic 401 middleware.
+- User-facing chat UI.
+- Local conversation/message persistence or durable message store.
+- History reads and synchronization-cursor reconciliation.
+- WebSocket/STOMP realtime integration.
+- Background mailbox polling or push notification handling.
+- Automatic/background access-token refresh beyond launch-time restoration; no generic 401 middleware.
 - Enrollment beyond first-device bootstrap: Companion approval UI, recovery enrollment/entry/rotation, and revocation UX.
-- OTPK replenishment trigger and Kyber rotation flow.
+- OTPK replenishment and Kyber rotation.
 - Identity verification/fingerprint UI and a user-facing trust-state machine.
-- Local conversation/message database or durable message store.
-- Navigation, ViewModel, dependency injection, background work, and push notifications.
+- Primary-owned durable conversation history.
 - Primary-to-Companion history synchronization.
 - Wrapping-key rotation/lifecycle policy.
 - Encrypted backup/restore.
@@ -136,7 +109,7 @@ These decisions should be made when their corresponding implementation slices re
 ## What this is not
 
 - not a TUI architecture port;
-- not an E2EE implementation;
+- not a claim that the Android app has a user-facing chat experience;
 - not a history-sync implementation;
 - not a server-side implementation;
 - not a claim that Android already owns durable chat history.

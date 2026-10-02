@@ -6,15 +6,15 @@ Android is the **PRIMARY product device**. Web is a future COMPANION client. TUI
 
 ## Current state
 
-Slices 0–6 are complete.
+Slices 0–8 are complete.
 
-The app is a single-`:app`-module Compose application with Samvaad branding, real HTTPS authentication, durable authenticated-session restart handling, first-device E2EE enrollment, durable libsignal device/prekey/Kyber material, and outbound Signal session establishment.
+The app is a single-`:app`-module Compose application with Samvaad branding, HTTPS authentication, durable authenticated-session restart handling, first-device E2EE enrollment, durable libsignal device/prekey/Kyber material, outbound Signal session establishment, encrypted message submission, and inbound mailbox consumption/decryption.
 
 The current Android E2EE path is:
 
-`login → durable session → first-device enrollment → recipient device discovery → OTPK/signed-prekey claim → client-side signed-prekey + Kyber verification → libsignal SessionBuilder → durable SessionRecord`.
+`login → durable session → first-device enrollment → recipient device discovery → OTPK/signed-prekey claim → client-side signed-prekey + Kyber verification → libsignal SessionBuilder → durable SessionRecord → encrypted message submission → mailbox fetch → Signal PREKEY_INIT/RATCHET decryption → durable post-decrypt SessionRecord → per-message mailbox acknowledgment`.
 
-The Android client does **not** yet send or receive chat messages. Message submission, mailbox/decryption, history, realtime delivery, synchronization, Companion approval/recovery UX, and Primary-owned history are later slices.
+Inbound plaintext is processed in memory only. Android does not yet provide a user-facing chat/history experience.
 
 ## Baseline
 
@@ -41,11 +41,38 @@ Current public server baseline:
 
 This baseline enforces server-assigned device roles: one non-revoked PRIMARY and up to four non-revoked COMPANIONS, within the five-device non-revoked limit.
 
-The server already has E2EE device/enrollment, prekey/recovery, recipient-device discovery, OTPK claim, ciphertext transport, mailbox, history, synchronization-cursor, and device-level realtime foundations. Android currently consumes the authentication, enrollment, recipient discovery, and OTPK-claim contracts; message-transport surfaces are not integrated yet.
+The server already has E2EE device/enrollment, prekey/recovery, recipient-device discovery, OTPK claim, ciphertext transport, mailbox, history, synchronization-cursor, and device-level realtime foundations. Android currently consumes authentication, enrollment, recipient discovery, OTPK claim, ciphertext submission, mailbox fetch, and mailbox acknowledgment.
 
 The server's durable ciphertext history is a **transition state**. The target architecture makes the Android Primary the durable history authority and uses the server as a bounded delivery/replay layer. Retention/eviction and the Primary-to-Companion history-sync protocol are not yet locked.
 
 Field-level contracts remain in the server repository; this Android repository intentionally does not duplicate them.
+
+## Current messaging boundary
+
+Android currently has headless cryptographic/message-transport boundaries for both directions:
+
+- outbound Signal encryption and ciphertext submission;
+- inbound device-scoped mailbox fetch;
+- inbound PREKEY_INIT/RATCHET Signal decryption;
+- durable post-decrypt SessionRecord persistence before mailbox acknowledgment;
+- duplicate-delivery handling through libsignal `DuplicateMessageException`;
+- shared per-remote-device serialization between outbound and inbound SessionRecord mutation.
+
+Android does **not** yet provide:
+
+- a user-facing chat UI;
+- local conversation/message persistence;
+- history reads or synchronization-cursor reconciliation;
+- WebSocket/STOMP integration;
+- background mailbox polling;
+- push notifications;
+- OTPK replenishment;
+- Kyber rotation;
+- Companion approval/recovery UX;
+- identity/fingerprint verification UI;
+- Primary-owned durable conversation history;
+- Primary-to-Companion history synchronization;
+- encrypted backup/restore.
 
 ## Documentation map
 
