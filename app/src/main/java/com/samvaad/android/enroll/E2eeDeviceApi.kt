@@ -19,6 +19,15 @@ sealed class EnrollException(message: String, cause: Throwable? = null) :
     /** Transport failure, timeout, or malformed response. */
     class Transport(cause: Throwable? = null) : EnrollException("transport failure", cause)
 
+    /**
+     * The server answered 2xx with a body that does not parse as the
+     * documented contract. Distinct from [Transport] (no usable response
+     * arrived at all): callers must not treat the attempt as
+     * known-unconsumed — for claim, the OTPK may already be burned, so
+     * any retry claims fresh.
+     */
+    class Malformed(cause: Throwable? = null) : EnrollException("malformed response", cause)
+
     /** 401 or missing/invalid auth. Caller should re-login. */
     class Unauthorized : EnrollException("unauthorized")
 
@@ -27,6 +36,19 @@ sealed class EnrollException(message: String, cause: Throwable? = null) :
 
     /** 403 with reason `E2EE_RECOVERY_REQUIRED` (or other 403). */
     class RecoveryRequired : EnrollException("recovery required")
+
+    /**
+     * 403 on device-discovery endpoints (directory/claim): caller is not a
+     * friend of the target user. Never blind-retried as the same caller.
+     */
+    class Forbidden : EnrollException("forbidden")
+
+    /**
+     * 404 on device-discovery endpoints: unknown user (directory) or
+     * unknown/inactive (PENDING/REVOKED-masked) device (claim). The caller
+     * must re-discover rather than retry the same target.
+     */
+    class NotFound : EnrollException("not found")
 
     /** 409 conflict (e.g. identity already enrolled). Reconcile, never blind-retry. */
     class Conflict : EnrollException("conflict")
@@ -59,4 +81,33 @@ interface E2eeDeviceApi {
     /** GET /api/e2ee/devices. Owner list for reconciliation. */
     @Throws(IOException::class)
     suspend fun listDevices(session: AuthSession, serverAddress: String): DeviceList
+
+    /**
+     * GET /api/e2ee/users/{username}/devices. Friendship-gated recipient
+     * directory (ACTIVE devices only, possibly empty). Claim does not
+     * require session→device binding. @throws EnrollException with
+     * [EnrollException.Forbidden] for non-friends and
+     * [EnrollException.NotFound] for unknown users.
+     */
+    @Throws(IOException::class)
+    suspend fun listRecipientDevices(
+        session: AuthSession,
+        serverAddress: String,
+        username: String,
+    ): List<RecipientDeviceRecord>
+
+    /**
+     * POST /api/e2ee/devices/{deviceId}/one-time-prekeys/claim.
+     * Atomically consumes one EC one-time prekey ([requestId] makes the
+     * claim replay-safe; every NEW attempt must use a fresh UUID).
+     * A null [ClaimedDeviceBundle.oneTimePrekey] is the signed-prekey
+     * fallback, not an error.
+     */
+    @Throws(IOException::class)
+    suspend fun claimOneTimePrekey(
+        session: AuthSession,
+        serverAddress: String,
+        deviceId: String,
+        requestId: java.util.UUID,
+    ): ClaimedDeviceBundle
 }

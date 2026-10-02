@@ -116,6 +116,128 @@ class HttpE2eeDeviceApi(
         }
     }
 
+    override suspend fun listRecipientDevices(
+        session: AuthSession,
+        serverAddress: String,
+        username: String,
+    ): List<RecipientDeviceRecord> = withContext(Dispatchers.IO) {
+        require(username.isNotBlank()) { "username must be present" }
+        val encoded = java.net.URLEncoder.encode(username.trim(), StandardCharsets.UTF_8.name())
+        val (code, response) = get(session, serverAddress, "/api/e2ee/users/$encoded/devices")
+        if (code != HttpURLConnection.HTTP_OK) {
+            throw classifyDirectory(code, response)
+        }
+        try {
+            val array = JSONArray(response)
+            List(array.length()) { i -> parseRecipient(array.getJSONObject(i)) }
+        } catch (e: JSONException) {
+            throw EnrollException.Malformed(e)
+        }
+    }
+
+    override suspend fun claimOneTimePrekey(
+        session: AuthSession,
+        serverAddress: String,
+        deviceId: String,
+        requestId: java.util.UUID,
+    ): ClaimedDeviceBundle = withContext(Dispatchers.IO) {
+        require(deviceId.isNotBlank()) { "deviceId must be present" }
+        val (code, response) = post(
+            session,
+            serverAddress,
+            "/api/e2ee/devices/$deviceId/one-time-prekeys/claim",
+            JSONObject().put("requestId", requestId.toString()).toString(),
+        )
+        if (code != HttpURLConnection.HTTP_OK) {
+            throw classifyDirectory(code, response)
+        }
+        try {
+            parseClaim(JSONObject(response))
+        } catch (e: JSONException) {
+            throw EnrollException.Malformed(e)
+        }
+    }
+
+    private fun parseRecipient(json: JSONObject): RecipientDeviceRecord = RecipientDeviceRecord(
+        deviceId = json.getString("deviceId"),
+        registrationId = json.getInt("registrationId"),
+        signalDeviceId = json.getInt("signalDeviceId"),
+        deviceIdentityPublicKey = json.getString("deviceIdentityPublicKey"),
+        signedPrekeyId = json.getInt("signedPrekeyId"),
+        signedPrekey = json.getString("signedPrekey"),
+        signedPrekeySignature = json.getString("signedPrekeySignature"),
+        // Jackson serializes `isHasAvailableOneTimePrekey()` as
+        // `hasAvailableOneTimePrekey`; accept either spelling defensively.
+        hasAvailableOneTimePrekey = json.optBoolean("hasAvailableOneTimePrekey", false) ||
+            json.optBoolean("availableOneTimePrekey", false),
+        deviceRole = json.getString("deviceRole"),
+        kyberPrekeyId = if (json.isNull("kyberPrekeyId")) {
+            null
+        } else {
+            json.getInt("kyberPrekeyId")
+        },
+        kyberPrekey = if (json.isNull("kyberPrekey")) null else json.optString("kyberPrekey", null),
+        kyberPrekeySignature = if (json.isNull("kyberPrekeySignature")) {
+            null
+        } else {
+            json.optString("kyberPrekeySignature", null)
+        },
+    )
+
+    private fun parseClaim(json: JSONObject): ClaimedDeviceBundle {
+        val otpk = if (json.isNull("oneTimePrekey")) {
+            null
+        } else {
+            val o = json.getJSONObject("oneTimePrekey")
+            ClaimedOneTimePrekey(
+                prekeyId = o.getInt("prekeyId"),
+                publicKey = o.getString("publicKey"),
+            )
+        }
+        return ClaimedDeviceBundle(
+            deviceId = json.getString("deviceId"),
+            registrationId = json.getInt("registrationId"),
+            signalDeviceId = json.getInt("signalDeviceId"),
+            deviceIdentityPublicKey = json.getString("deviceIdentityPublicKey"),
+            signedPrekeyId = json.getInt("signedPrekeyId"),
+            signedPrekey = json.getString("signedPrekey"),
+            signedPrekeySignature = json.getString("signedPrekeySignature"),
+            oneTimePrekey = otpk,
+            deviceRole = json.getString("deviceRole"),
+            kyberPrekeyId = if (json.isNull("kyberPrekeyId")) {
+                null
+            } else {
+                json.getInt("kyberPrekeyId")
+            },
+            kyberPrekey = if (json.isNull("kyberPrekey")) null else json.optString("kyberPrekey", null),
+            kyberPrekeySignature = if (json.isNull("kyberPrekeySignature")) {
+                null
+            } else {
+                json.optString("kyberPrekeySignature", null)
+            },
+        )
+    }
+
+    /**
+     * Device-discovery classifier: friendship (403) and existence (404)
+     * are first-class here, unlike the enrollment paths where both map
+     * to [EnrollException.ServerRejected]. The 403 recovery reason keeps
+     * its existing meaning.
+     */
+    private fun classifyDirectory(code: Int, response: String): EnrollException = when (code) {
+        HttpURLConnection.HTTP_UNAUTHORIZED -> EnrollException.Unauthorized()
+        HttpURLConnection.HTTP_BAD_REQUEST -> EnrollException.BadRequest()
+        HttpURLConnection.HTTP_FORBIDDEN ->
+            if (responseReason(response) == RECOVERY_REQUIRED_REASON) {
+                EnrollException.RecoveryRequired()
+            } else {
+                EnrollException.Forbidden()
+            }
+        HttpURLConnection.HTTP_NOT_FOUND -> EnrollException.NotFound()
+        HttpURLConnection.HTTP_CONFLICT -> EnrollException.Conflict()
+        else -> EnrollException.ServerRejected()
+    }
+
     private fun parseDevice(json: JSONObject): DeviceRecord = DeviceRecord(
         deviceId = json.getString("deviceId"),
         registrationId = json.getInt("registrationId"),

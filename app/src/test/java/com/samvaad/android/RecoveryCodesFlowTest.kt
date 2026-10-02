@@ -87,6 +87,21 @@ class RecoveryCodesFlowTest {
             session: AuthSession,
             serverAddress: String,
         ): DeviceList = DeviceList("ENROLLED_ACTIVE", emptyList())
+
+        override suspend fun listRecipientDevices(
+            session: AuthSession,
+            serverAddress: String,
+            username: String,
+        ): List<com.samvaad.android.enroll.RecipientDeviceRecord> =
+            throw AssertionError("no discovery in this slice")
+
+        override suspend fun claimOneTimePrekey(
+            session: AuthSession,
+            serverAddress: String,
+            deviceId: String,
+            requestId: java.util.UUID,
+        ): com.samvaad.android.enroll.ClaimedDeviceBundle =
+            throw AssertionError("no discovery in this slice")
     }
 
     private lateinit var context: Context

@@ -367,6 +367,17 @@ class SessionRefresherTest {
                     )
                 ),
             )
+
+            override suspend fun listRecipientDevices(
+                session: AuthSession, serverAddress: String, username: String,
+            ): List<com.samvaad.android.enroll.RecipientDeviceRecord> =
+                throw AssertionError("no discovery in this slice")
+
+            override suspend fun claimOneTimePrekey(
+                session: AuthSession, serverAddress: String, deviceId: String,
+                requestId: java.util.UUID,
+            ): com.samvaad.android.enroll.ClaimedDeviceBundle =
+                throw AssertionError("no discovery in this slice")
         }
         // Fresh instances throughout: restart-like conditions.
         val restored = runBlocking { SessionRefresher(auth, FileSessionStore(context, keys)).restoreSession() }

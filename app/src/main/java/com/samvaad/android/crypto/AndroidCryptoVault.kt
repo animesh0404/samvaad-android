@@ -29,8 +29,24 @@ import java.util.UUID
 class AndroidCryptoVault(
     context: Context,
     private val keys: WrappingKeyProvider,
+    /**
+     * Vault namespace directory under [Context.getNoBackupFilesDir].
+     * Defaults to the local-identity record namespace; remote Signal
+     * session blobs use `signal-sessions` with [CryptoRecordKind.SESSION].
+     * Same wrapping key, separate directories, never mixed.
+     */
+    storeSubdir: String = STORE_SUBDIR,
 ) {
-    private val storeDir: File = File(context.noBackupFilesDir, STORE_SUBDIR).also {
+    init {
+        // The namespace is internal API, but a `..`/separator value would
+        // escape getNoBackupFilesDir() — reject it like the filename guard
+        // below rejects non-UUID handle ids.
+        require(storeSubdir.isNotBlank()) { "invalid vault namespace" }
+        require(storeSubdir.none { it == '/' || it == '\\' }) { "invalid vault namespace" }
+        require(storeSubdir != "." && storeSubdir != "..") { "invalid vault namespace" }
+    }
+
+    private val storeDir: File = File(context.noBackupFilesDir, storeSubdir).also {
         if (!it.isDirectory) it.mkdirs()
     }
 

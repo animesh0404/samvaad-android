@@ -8,13 +8,27 @@ import com.samvaad.android.crypto.SpikeCryptoMaterial.SignedPrekey
 import java.util.Arrays
 import org.signal.libsignal.protocol.IdentityKey
 import org.signal.libsignal.protocol.IdentityKeyPair
+import org.signal.libsignal.protocol.InvalidKeyException
+import org.signal.libsignal.protocol.InvalidKeyIdException
+import org.signal.libsignal.protocol.InvalidMessageException
+import org.signal.libsignal.protocol.NoSessionException
+import org.signal.libsignal.protocol.SessionBuilder
+import org.signal.libsignal.protocol.SessionCipher
+import org.signal.libsignal.protocol.SignalProtocolAddress
+import org.signal.libsignal.protocol.UntrustedIdentityException
 import org.signal.libsignal.protocol.ecc.ECKeyPair
 import org.signal.libsignal.protocol.ecc.ECPublicKey
+import org.signal.libsignal.protocol.groups.state.SenderKeyRecord
+import org.signal.libsignal.protocol.groups.state.SenderKeyStore
 import org.signal.libsignal.protocol.kem.KEMKeyPair
 import org.signal.libsignal.protocol.kem.KEMKeyType
 import org.signal.libsignal.protocol.kem.KEMPublicKey
+import org.signal.libsignal.protocol.state.IdentityKeyStore
 import org.signal.libsignal.protocol.state.KyberPreKeyRecord
+import org.signal.libsignal.protocol.state.PreKeyBundle
 import org.signal.libsignal.protocol.state.PreKeyRecord
+import org.signal.libsignal.protocol.state.SessionRecord
+import org.signal.libsignal.protocol.state.SignalProtocolStore
 import org.signal.libsignal.protocol.state.SignedPreKeyRecord
 
 /**
@@ -227,6 +241,10 @@ class AndroidSignalAdapter {
                         closeQuietly(record)
                     }
                 }
+                // Session blobs restore through inspectSession, never here:
+                // they carry no private handle and need no live key object.
+                CryptoRecordKind.SESSION ->
+                    throw CryptoRecoveryException("session records restore via inspectSession")
             }
         } catch (e: CryptoRecoveryException) {
             throw e
@@ -329,6 +347,371 @@ class AndroidSignalAdapter {
         data class Signed(val value: SignedPrekey) : RestoredPublic
         data class OneTime(val value: OneTimePrekey) : RestoredPublic
         data class Kyber(val value: KyberPrekey) : RestoredPublic
+    }
+
+    /**
+     * Outbound Signal session establishment (slice: session establishment).
+     *
+     * Builds the Kyber-mandatory libsignal [PreKeyBundle] from the
+     * server-supplied [remote] bundle — verifying the signed-prekey and
+     * Kyber signatures under the recipient identity FIRST (the server is
+     * never trusted for this) — then runs `SessionBuilder.process` with
+     * the already-adopted local identity. Nothing here generates local
+     * key material: [localIdentity] must already be live in this adapter
+     * (restored from the vault after process death).
+     *
+     * The store is strictly ephemeral and outbound-only: it carries the
+     * local identity pair plus an optional seed ([existingSessionBytes]
+     * for continuing, [pinnedRemoteIdentity] for TOFU). Durability is the
+     * caller's job — the returned [EstablishedSession.sessionBytes] are
+     * the canonical `SessionRecord.serialize()` bytes to seal. Ownership
+     * transfers to the caller.
+     *
+     * A claimed OTPK bundle must be used at most once: callers must never
+     * retry with the same [remote] after failure — make a fresh claim.
+     *
+     * @throws SessionCryptoException fail-closed, never partial state.
+     */
+    fun establishOutboundSession(
+        localIdentity: SpikeCryptoMaterial.Identity,
+        localRegistrationId: Int,
+        remoteUsername: String,
+        remote: RemotePrekeyBundle,
+        existingSessionBytes: ByteArray? = null,
+        pinnedRemoteIdentity: ByteArray? = null,
+    ): EstablishedSession {
+        require(remoteUsername.isNotBlank()) { "remote username must be present" }
+        val localPair = requireIdentity(localIdentity.privateHandle)
+        val address = SignalProtocolAddress(remoteUsername, remote.signalDeviceId)
+        val remoteIdentity = parseRemoteIdentity(remote)
+        // Server is never trusted for signature validity: verify before
+        // any bundle is constructed, let alone processed.
+        if (!verifySignedPrekey(remote.identityKey, remote.signedPrekey, remote.signedPrekeySignature)) {
+            throw SessionCryptoException.InvalidSignature("signed-prekey")
+        }
+        if (remote.kyberPrekey == null || remote.kyberPrekeyId == null ||
+            remote.kyberPrekeySignature == null
+        ) {
+            throw SessionCryptoException.KyberUnsupported()
+        }
+        if (!verifyKyberSignature(remote.identityKey, remote.kyberPrekey, remote.kyberPrekeySignature)) {
+            throw SessionCryptoException.InvalidSignature("kyber-prekey")
+        }
+        val bundle = buildBundle(remote, remoteIdentity)
+        val pinned: IdentityKey? = pinnedRemoteIdentity?.let {
+            try {
+                IdentityKey(it)
+            } catch (e: Exception) {
+                throw SessionCryptoException.InvalidBundle(e)
+            }
+        }
+        val store = EphemeralOutboundStore(
+            localPair, localRegistrationId, address, existingSessionBytes, pinned
+        )
+        try {
+            try {
+                SessionBuilder(store, address).process(bundle)
+            } catch (e: UntrustedIdentityException) {
+                throw SessionCryptoException.UntrustedIdentity(e)
+            } catch (e: InvalidKeyException) {
+                throw SessionCryptoException.EstablishmentFailed(e)
+            }
+            val record = store.sessionFor(address)
+                ?: throw SessionCryptoException.EstablishmentFailed()
+            if (!record.hasSenderChain()) {
+                throw SessionCryptoException.EstablishmentFailed()
+            }
+            return EstablishedSession(
+                sessionBytes = record.serialize(),
+                remoteIdentityBytes = record.remoteIdentityKey.serialize(),
+                remoteRegistrationId = record.remoteRegistrationId,
+            )
+        } finally {
+            closeQuietly(bundle)
+            store.closeAll()
+        }
+    }
+
+    /**
+     * Readiness + pin gate for a stored session blob: restores the
+     * canonical [SessionRecord], requires a sender chain, and reports the
+     * embedded remote identity so the caller can compare it against its
+     * pinned metadata. @throws SessionCryptoException.SessionCorrupt.
+     */
+    fun inspectSession(sessionBytes: ByteArray): SessionInfo {
+        val record = try {
+            SessionRecord(sessionBytes)
+        } catch (e: InvalidMessageException) {
+            throw SessionCryptoException.SessionCorrupt(e)
+        } catch (e: Exception) {
+            throw SessionCryptoException.SessionCorrupt(e)
+        }
+        try {
+            if (!record.hasSenderChain()) throw SessionCryptoException.SessionCorrupt()
+            return SessionInfo(
+                remoteIdentityBytes = record.remoteIdentityKey.serialize(),
+                remoteRegistrationId = record.remoteRegistrationId,
+            )
+        } finally {
+            closeQuietly(record)
+        }
+    }
+
+    /**
+     * Test-only encrypt probe: proves an established session can actually
+     * encrypt via `SessionCipher`. NOT message transport — the resulting
+     * bytes are asserted on and discarded. Production establishment never
+     * calls this.
+     */
+    fun probeEncrypt(
+        localIdentity: SpikeCryptoMaterial.Identity,
+        localRegistrationId: Int,
+        sessionBytes: ByteArray,
+        pinnedRemoteIdentity: ByteArray?,
+        remoteUsername: String,
+        remoteSignalDeviceId: Int,
+        plaintext: ByteArray,
+    ): ByteArray {
+        val localPair = requireIdentity(localIdentity.privateHandle)
+        val address = SignalProtocolAddress(remoteUsername, remoteSignalDeviceId)
+        val pinned: IdentityKey? = pinnedRemoteIdentity?.let {
+            try {
+                IdentityKey(it)
+            } catch (e: Exception) {
+                throw SessionCryptoException.InvalidBundle(e)
+            }
+        }
+        val store = EphemeralOutboundStore(
+            localPair, localRegistrationId, address, sessionBytes, pinned
+        )
+        try {
+            return try {
+                SessionCipher(store, address).encrypt(plaintext).serialize()
+            } catch (e: UntrustedIdentityException) {
+                throw SessionCryptoException.UntrustedIdentity(e)
+            } catch (e: NoSessionException) {
+                throw SessionCryptoException.SessionCorrupt(e)
+            } catch (e: Exception) {
+                throw SessionCryptoException.EstablishmentFailed(e)
+            }
+        } finally {
+            store.closeAll()
+        }
+    }
+
+    /** Canonical session bytes plus the embedded remote trust anchor. */
+    data class EstablishedSession(
+        val sessionBytes: ByteArray,
+        val remoteIdentityBytes: ByteArray,
+        val remoteRegistrationId: Int,
+    )
+
+    /** Remote trust anchor reported by [inspectSession]. */
+    data class SessionInfo(
+        val remoteIdentityBytes: ByteArray,
+        val remoteRegistrationId: Int,
+    )
+
+    private fun parseRemoteIdentity(remote: RemotePrekeyBundle): IdentityKey {
+        if (remote.identityKey.isEmpty()) throw SessionCryptoException.InvalidBundle()
+        return try {
+            SpikeCryptoMaterial.requireCanonicalIdentityKey(remote.identityKey)
+            IdentityKey(remote.identityKey)
+        } catch (e: SessionCryptoException) {
+            throw e
+        } catch (e: Exception) {
+            throw SessionCryptoException.InvalidBundle(e)
+        }
+    }
+
+    /**
+     * Construct the Kyber-mandatory libsignal bundle. Signatures are
+     * already verified by the caller; this only parses. A null OTPK pair
+     * is the signed-prekey fallback (`NULL_PRE_KEY_ID` + null public).
+     * The returned bundle is natively owned — callers must close it.
+     */
+    private fun buildBundle(remote: RemotePrekeyBundle, identity: IdentityKey): PreKeyBundle {
+        if (remote.signedPrekey.isEmpty() || remote.signedPrekeySignature.isEmpty()) {
+            throw SessionCryptoException.InvalidBundle()
+        }
+        val kyberBytes = remote.kyberPrekey
+            ?: throw SessionCryptoException.KyberUnsupported()
+        val kyberId = remote.kyberPrekeyId
+            ?: throw SessionCryptoException.KyberUnsupported()
+        val kyberSig = remote.kyberPrekeySignature
+            ?: throw SessionCryptoException.KyberUnsupported()
+        if (kyberBytes.isEmpty() || kyberSig.isEmpty()) {
+            throw SessionCryptoException.InvalidBundle()
+        }
+        try {
+            val signedPub = ECPublicKey(remote.signedPrekey)
+            val kyberPub = KEMPublicKey(kyberBytes)
+            val otkPub: ECPublicKey? = when {
+                remote.oneTimePrekey == null -> null
+                remote.oneTimePrekey.isEmpty() -> throw SessionCryptoException.InvalidBundle()
+                else -> ECPublicKey(remote.oneTimePrekey)
+            }
+            return PreKeyBundle(
+                remote.registrationId,
+                remote.signalDeviceId,
+                remote.oneTimePrekeyId ?: PreKeyBundle.NULL_PRE_KEY_ID,
+                otkPub,
+                remote.signedPrekeyId,
+                signedPub,
+                remote.signedPrekeySignature,
+                identity,
+                kyberId,
+                kyberPub,
+                kyberSig,
+            )
+        } catch (e: SessionCryptoException) {
+            throw e
+        } catch (e: Exception) {
+            throw SessionCryptoException.InvalidBundle(e)
+        }
+    }
+
+    /**
+     * Ephemeral outbound-only [SignalProtocolStore]. Carries the local
+     * identity pair/registration id plus an optional seeded session and
+     * pinned remote identity. Everything else the interface demands is a
+     * minimal safe stub: libsignal's outbound `process`/`encrypt` paths
+     * only ever touch the session and identity stores (verified against
+     * 0.86.5), so the prekey/signed-prekey/Kyber/sender-key stores throw
+     * or report absence. No durability here — `storeSession` keeps the
+     * record in memory and the caller seals `serialize()` to the vault.
+     */
+    private inner class EphemeralOutboundStore(
+        private val localPair: IdentityKeyPair,
+        private val localRegistrationId: Int,
+        address: SignalProtocolAddress,
+        seedSession: ByteArray?,
+        pinnedIdentity: IdentityKey?,
+    ) : SignalProtocolStore {
+        private val sessions = mutableMapOf<SignalProtocolAddress, SessionRecord>()
+        private val identities = mutableMapOf<SignalProtocolAddress, IdentityKey>()
+
+        init {
+            seedSession?.let { bytes ->
+                try {
+                    sessions[address] = SessionRecord(bytes)
+                } catch (e: InvalidMessageException) {
+                    throw SessionCryptoException.SessionCorrupt(e)
+                } catch (e: Exception) {
+                    throw SessionCryptoException.SessionCorrupt(e)
+                }
+            }
+            pinnedIdentity?.let { identities[address] = it }
+        }
+
+        fun sessionFor(address: SignalProtocolAddress): SessionRecord? = sessions[address]
+
+        fun closeAll() {
+            sessions.values.forEach { closeQuietly(it) }
+            sessions.clear()
+        }
+
+        override fun loadSession(address: SignalProtocolAddress): SessionRecord =
+            sessions.getOrPut(address) { SessionRecord() }
+
+        override fun loadExistingSessions(
+            addresses: List<SignalProtocolAddress>
+        ): List<SessionRecord> = addresses.mapNotNull { sessions[it] }
+
+        override fun getSubDeviceSessions(name: String): List<Int> =
+            sessions.keys.filter { it.name == name }.map { it.deviceId }
+
+        override fun storeSession(address: SignalProtocolAddress, record: SessionRecord) {
+            sessions[address] = record
+        }
+
+        override fun containsSession(address: SignalProtocolAddress): Boolean =
+            sessions.containsKey(address)
+
+        override fun deleteSession(address: SignalProtocolAddress) {
+            sessions.remove(address)?.let { closeQuietly(it) }
+        }
+
+        override fun deleteAllSessions(name: String) {
+            sessions.keys.filter { it.name == name }.forEach { deleteSession(it) }
+        }
+
+        override fun getIdentityKeyPair(): IdentityKeyPair = localPair
+
+        override fun getLocalRegistrationId(): Int = localRegistrationId
+
+        override fun saveIdentity(
+            address: SignalProtocolAddress,
+            identity: IdentityKey,
+        ): IdentityKeyStore.IdentityChange {
+            val existing = identities[address]
+            return if (existing == null ||
+                existing.serialize().contentEquals(identity.serialize())
+            ) {
+                identities[address] = identity
+                IdentityKeyStore.IdentityChange.NEW_OR_UNCHANGED
+            } else {
+                IdentityKeyStore.IdentityChange.REPLACED_EXISTING
+            }
+        }
+
+        override fun isTrustedIdentity(
+            address: SignalProtocolAddress,
+            identity: IdentityKey,
+            direction: IdentityKeyStore.Direction,
+        ): Boolean {
+            val existing = identities[address] ?: return true
+            return existing.serialize().contentEquals(identity.serialize())
+        }
+
+        override fun getIdentity(address: SignalProtocolAddress): IdentityKey =
+            identities[address] ?: throw NoSessionException("no pinned identity")
+
+        override fun loadPreKey(preKeyId: Int): PreKeyRecord =
+            throw InvalidKeyIdException("one-time prekeys unsupported outbound")
+
+        override fun storePreKey(preKeyId: Int, record: PreKeyRecord) = Unit
+
+        override fun containsPreKey(preKeyId: Int): Boolean = false
+
+        override fun removePreKey(preKeyId: Int) = Unit
+
+        override fun loadSignedPreKey(signedPreKeyId: Int): SignedPreKeyRecord =
+            throw InvalidKeyIdException("signed prekeys unsupported outbound")
+
+        override fun loadSignedPreKeys(): List<SignedPreKeyRecord> = emptyList()
+
+        override fun storeSignedPreKey(signedPreKeyId: Int, record: SignedPreKeyRecord) = Unit
+
+        override fun containsSignedPreKey(signedPreKeyId: Int): Boolean = false
+
+        override fun removeSignedPreKey(signedPreKeyId: Int) = Unit
+
+        override fun loadKyberPreKey(kyberPreKeyId: Int): KyberPreKeyRecord =
+            throw InvalidKeyIdException("kyber prekeys unsupported outbound")
+
+        override fun loadKyberPreKeys(): List<KyberPreKeyRecord> = emptyList()
+
+        override fun storeKyberPreKey(kyberPreKeyId: Int, record: KyberPreKeyRecord) = Unit
+
+        override fun containsKyberPreKey(kyberPreKeyId: Int): Boolean = false
+
+        override fun markKyberPreKeyUsed(
+            kyberPreKeyId: Int,
+            signedPreKeyId: Int,
+            baseKey: ECPublicKey,
+        ) = Unit
+
+        override fun storeSenderKey(
+            sender: SignalProtocolAddress,
+            distributionId: java.util.UUID,
+            record: SenderKeyRecord,
+        ) = Unit
+
+        override fun loadSenderKey(
+            sender: SignalProtocolAddress,
+            distributionId: java.util.UUID,
+        ): SenderKeyRecord = throw NoSessionException("sender keys unsupported")
     }
 
     private fun requireKind(handle: SealedHandle, kind: CryptoRecordKind) {
