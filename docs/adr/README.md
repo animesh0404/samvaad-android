@@ -16,6 +16,7 @@ Conventions: `NNNN-short-title.md` with Status / Context / Decision / Consequenc
 | [0006](0006-durable-refresh-token-session.md) | Durable refresh-token session |
 | [0007](0007-outbound-signal-session-establishment.md) | Outbound Signal session establishment |
 | [0008](0008-inbound-mailbox-consumption-and-signal-decryption.md) | Inbound mailbox consumption and Signal decryption |
+| [0009](0009-durable-message-state-and-reconciliation.md) | Durable message state and history/cursor reconciliation |
 
 ## Authority boundary
 
