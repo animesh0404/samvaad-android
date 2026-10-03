@@ -109,3 +109,17 @@ For native/Keystore/Room slices, run the relevant instrumented tests on the Pixe
 - Keep tests deterministic, host-side where possible.
 - Use fresh app state for tests that assert exact persistent-vault/database counts.
 - Do not introduce test frameworks without a slice requirement.
+
+
+### Slice 11
+
+The Primary conversation/history presentation implementation was committed as `5b74e71`.
+
+- Host unit suite: `386/386` pass on the exact checkpoint tree.
+- Debug APK build succeeded.
+- API 33 emulator instrumented suite: `29/29` pass on the exact checkpoint tree.
+- Physical Pixel 6a Keystore validation: `5/5` pass during the Slice 11 validation run.
+- `git diff --check` was clean before the checkpoint commit.
+- UI tests cover empty state, offline durable rendering, detail/back navigation, sync failure preservation, sync loading, explicit recipient-device selection, send-and-render flow, duplicate-tap single-flight behavior, restart rendering without network, handle-less bound-device fail-closed presentation, and sealed-content failure placeholder behavior.
+- Slice 11 uses fake APIs for UI/host integration tests; no authenticated live-server round-trip was added or required.
+- The checkpoint contains implementation/test changes only; documentation reconciliation is this separate single docs commit.

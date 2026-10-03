@@ -14,7 +14,7 @@ This document describes the Android repository as it exists now. It does not des
 - Gradle Kotlin DSL with version catalog.
 - AGP `9.4.1`, Kotlin `2.2.10`, Compose BOM `2026.02.01`, Gradle `9.6.0`.
 - `minSdk 30`, `compileSdk 37`, `targetSdk 37`.
-- The current UI is the Samvaad entry screen with server address, username, password, and Continue action. Input values are local Compose UI state until authentication succeeds.
+- The unauthenticated UI is the Samvaad entry screen with server address, username, password, and Continue action. The authenticated Home surface now includes enrollment/approval/recovery state plus the Slice 11 conversation/history presentation. Input and presentation values remain local Compose UI state.
 - Authentication uses `POST /api/auth/login` with `clientPlatform: "ANDROID"` over HTTPS. The live `AuthSession` remains an in-memory runtime object while its refresh bundle is sealed for restart recovery by the Slice 5 session store.
 - The authenticated root uses `SessionGate` to restore the durable refresh session and routes between login and the authenticated Home boundary without a navigation framework.
 - Host UI/unit tests cover the entry/auth/session boundaries with fakes and deterministic synchronization.
@@ -135,9 +135,35 @@ Slice 10 adds the Android-side UX/state boundary for server-defined device appro
 
 The Slice 10 authenticated server round-trip was not completed in the development environment because no safe test credentials were available. The Android implementation is covered by contract/unit/UI tests and unauthenticated/TLS checks; no server state was mutated for validation.
 
+### Slice 11 — Primary-owned durable conversation history presentation and behavior
+
+Slice 11 turns the existing durable message-state boundary into a user-facing Primary conversation/history surface without adding a new server protocol or persistence layer.
+
+#### Conversation list and detail
+
+- HomeScreen constructs one explicit messaging graph for the authenticated surface and reuses the existing Room database, Keystore-backed MessageContentSealer, SessionMetadataStore, MessageSender, SessionEstablisher, and ReconciliationSweep.
+- The conversation list is derived from known durable conversation IDs and recent locally stored message rows.
+- Conversation detail renders locally durable messages in server sequence order.
+- Sealed message content is opened only in memory for rendering. Unreadable/corrupt sealed content is represented by a safe placeholder rather than raw bytes.
+- Conversation navigation is local Compose state with BackHandler; no Navigation Compose or ViewModel/DI framework was introduced.
+- An installation without local crypto handles remains explicitly Device bound and does not expose messaging UI; existing fail-closed messaging guards remain authoritative.
+
+#### Manual reconciliation and sending
+
+- Sync is an explicit user action. It invokes the existing bounded ReconciliationSweep, then reloads the Room-backed list/detail state.
+- Existing durable messages remain visible when synchronization reports partial failures.
+- The composer requires an explicit friend username, uses the existing friendship-gated recipient directory, and requires explicit selection of one recipient device.
+- Sending reuses the existing SessionEstablisher and MessageSender; it does not introduce a second encryption/submission path.
+- Successful submission refreshes the local conversation/detail view from durable Room state. UI exposes only local queued/sending/sent-oriented state and safe errors; it does not expose ciphertext or cryptographic material.
+- Duplicate taps are guarded at the UI level so only one logical send runs at a time.
+
+#### Restart and offline behavior
+
+- The conversation list/detail surfaces can render durable sealed message content without a network call after process restart.
+- Room remains the local source of truth for presentation; server history remains reconciliation/replay input.
+- Slice 11 does not add background polling, push, WebSocket/STOMP, Primary-to-Companion history sync, server retention/eviction, backup/restore, or new server endpoints.
 ## Not implemented
 
-- User-facing chat UI and conversation/history presentation.
 - WebSocket/STOMP realtime integration.
 - Background mailbox polling or push notification handling.
 - Automatic/background access-token refresh beyond launch-time restoration; no generic 401 middleware.

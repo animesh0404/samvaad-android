@@ -6,9 +6,9 @@ Android is the **PRIMARY product device**. Web is a future COMPANION client. TUI
 
 ## Current state
 
-Slices 0–10 are complete.
+Slices 0–11 are complete.
 
-The app is a single-`:app`-module Compose application with Samvaad branding, HTTPS authentication, durable authenticated-session restart handling, first-device E2EE enrollment, durable libsignal device/prekey/Kyber material, outbound Signal session establishment, encrypted message submission, inbound mailbox consumption/decryption, and durable message-state/history reconciliation.
+The app is a single-`:app`-module Compose application with Samvaad branding, HTTPS authentication, durable authenticated-session restart handling, first-device E2EE enrollment, durable libsignal device/prekey/Kyber material, outbound Signal session establishment, encrypted message submission, inbound mailbox consumption/decryption, durable message-state/history reconciliation, and a user-facing Primary conversation/history surface.
 
 The current Android E2EE path is:
 
@@ -41,7 +41,7 @@ Current public server baseline:
 
 This baseline enforces server-assigned device roles: one non-revoked PRIMARY and up to four non-revoked COMPANIONS, within the five-device non-revoked limit.
 
-The server already has E2EE device/enrollment, prekey/recovery, recipient-device discovery, OTPK claim, ciphertext transport, mailbox, history, synchronization-cursor, and device-level realtime foundations. Android currently consumes authentication, enrollment, recipient discovery, OTPK claim, ciphertext submission, mailbox fetch, mailbox acknowledgment, conversation history, synchronization-cursor read/write, and the existing device approval/recovery contracts. The message-state and reconciliation code is currently a headless bounded capability; it is not yet wired to a scheduler, background worker, push trigger, or chat/history UI.
+The server already has E2EE device/enrollment, prekey/recovery, recipient-device discovery, OTPK claim, ciphertext transport, mailbox, history, synchronization-cursor, and device-level realtime foundations. Android currently consumes authentication, enrollment, recipient discovery, OTPK claim, ciphertext submission, mailbox fetch, mailbox acknowledgment, conversation history, synchronization-cursor read/write, and the existing device approval/recovery contracts. Slice 11 now presents the durable local message state through a user-facing conversation list/detail surface. Manual Sync invokes the existing bounded reconciliation sweep. There is still no scheduler, background worker, push trigger, or realtime transport.
 
 The server's durable ciphertext history is a **transition state**. The target architecture makes the Android Primary the durable history authority and uses the server as a bounded delivery/replay layer. Retention/eviction and the Primary-to-Companion history-sync protocol are not yet locked.
 
@@ -49,7 +49,7 @@ Field-level contracts remain in the server repository; this Android repository i
 
 ## Current messaging boundary
 
-Android currently has headless cryptographic/message-state boundaries for both directions:
+Android now has user-facing conversation/history presentation on top of the existing cryptographic/message-state boundaries:
 
 - outbound Signal encryption and ciphertext submission;
 - durable outbound message state with `PENDING_SEAL → SEALED → SENT` recovery;
@@ -60,7 +60,12 @@ Android currently has headless cryptographic/message-state boundaries for both d
 - shared per-remote-device serialization between outbound and inbound SessionRecord mutation;
 - bounded history ingestion from the existing server history API;
 - contiguous per-conversation synchronization-cursor reconciliation;
-- a deterministic, bounded reconciliation sweep covering outbox, mailbox, history, and cursors.
+- a deterministic, bounded reconciliation sweep covering outbox, mailbox, history, and cursors;
+- a local conversation list and conversation detail view backed by Room;
+- manual Sync that runs the existing bounded reconciliation sweep and reloads durable state;
+- explicit friend username and recipient-device selection before sending;
+- outbound send flow that reuses SessionEstablisher and MessageSender and renders the accepted durable local message;
+- restart/offline rendering from the durable local message store.
 
 Room is the durable message-state boundary. The existing Keystore-backed crypto vault remains the key/SessionRecord boundary. Room and Keystore operations are not treated as one atomic transaction; crash-recoverable state machines reconcile incomplete cross-store transitions.
 
@@ -68,8 +73,6 @@ Signal ciphertext alone is not treated as durable Primary history: after the Sig
 
 Android does **not** yet provide:
 
-- a user-facing chat UI;
-- user-facing conversation/history presentation;
 - WebSocket/STOMP integration;
 - background mailbox polling;
 - push notifications;
@@ -84,7 +87,7 @@ Android does **not** yet provide:
 - recovery-code rotation;
 - automatic/polling companion approval or recovery.
 
-Reconciliation is currently a headless bounded operation; no scheduler, push trigger, or background worker has been added.
+Reconciliation remains a bounded operation. Slice 11 exposes it through an explicit manual Sync action; no scheduler, push trigger, background worker, or realtime subsystem has been added.
 
 ## Documentation map
 

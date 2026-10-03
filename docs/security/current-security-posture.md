@@ -4,7 +4,7 @@ This document describes the Android client's actual security posture, not the se
 
 ## Implemented now
 
-The Android application through Slice 10 has:
+The Android application through Slice 11 has:
 
 - HTTPS-only login/refresh/logout plus existing E2EE device, directory/claim, message-submission, mailbox-fetch/ack, history, and cursor calls;
 - no WebSocket/realtime integration, background mailbox polling, or push delivery;
@@ -30,7 +30,11 @@ The Android application through Slice 10 has:
 - recovery bind requests that carry no private key material;
 - explicit qualification of handle-less bound-device state: server session/device binding may succeed while local messaging remains unavailable until local crypto material exists;
 - fail-closed messaging guards for adopted devices without local crypto handles;
-- no message content is logged or stored in the Room database in plaintext.
+- no message content is logged or stored in the Room database in plaintext;
+- user-facing conversation/history presentation reads only sealed message-content BLOBs from Room and opens them in memory;
+- manual Sync is the only Slice 11 reconciliation trigger; there is still no background polling, push, or realtime delivery;
+- recipient selection requires an explicit friend username and explicit recipient-device choice before sending;
+- UI duplicate-send protection does not replace the durable MessageSender recovery/idempotency invariants.
 
 ### Durable message-state invariant
 

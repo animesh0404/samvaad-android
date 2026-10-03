@@ -97,3 +97,12 @@ No Android client should infer future server behavior from this checkpoint.
 ## No server changes in Slice 10
 
 Slice 10 required no server implementation changes. It consumes the approval, revocation-as-denial, recovery-enroll, bind, and device-list contracts already present in the server baseline. Primary-gated approval, recovery-code rotation, succession, liveness, and new Android-specific endpoints remain deferred.
+
+
+## No server changes in Slice 11
+
+Slice 11 required **no server implementation changes**.
+
+The Android checkpoint `5b74e71dab514c88427617346a2cd800cfc4cabb` consumes the already-integrated history/cursor, recipient-directory, session-establishment, and ciphertext-submission contracts. The new work is presentation/wiring on the Android side: Room-backed conversation/history rendering, manual invocation of the existing bounded reconciliation sweep, and reuse of the existing send/session boundaries.
+
+No Android-specific endpoint was introduced. Slice 11 does not define server retention/eviction, realtime/push transport, Primary-to-Companion history synchronization, backup/restore, or any new message protocol.

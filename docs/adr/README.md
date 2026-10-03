@@ -18,6 +18,7 @@ Conventions: `NNNN-short-title.md` with Status / Context / Decision / Consequenc
 | [0008](0008-inbound-mailbox-consumption-and-signal-decryption.md) | Inbound mailbox consumption and Signal decryption |
 | [0009](0009-durable-message-state-and-reconciliation.md) | Durable message state and history/cursor reconciliation |
 | [0010](0010-companion-approval-and-recovery-ux.md) | Existing-device Companion approval and recovery UX |
+| [0011](0011-primary-conversation-history-presentation.md) | Primary conversation/history presentation and behavior |
 
 ## Authority boundary
 

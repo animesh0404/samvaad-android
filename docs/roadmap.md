@@ -127,15 +127,29 @@ DONE.
 - No server implementation changes were made.
 - The authenticated real-server round-trip was not completed because safe credentials were unavailable; no server state was mutated for that validation gap.
 
-## Next
+## Completed
 
 ### Slice 11 — Primary-owned durable conversation history presentation and behavior
 
-This is the next planned Android slice. It should turn the existing durable message-state boundary into user-facing conversation/history behavior without inventing the future Companion history-sync protocol or server retention rules.
+DONE.
+
+- The authenticated Home surface now presents a Room-backed conversation list and conversation detail view from durable local message state.
+- Sealed message content is opened only in memory for presentation; unreadable content fails closed to a safe placeholder.
+- Manual Sync invokes the existing bounded ReconciliationSweep and reloads durable conversation/detail state. There is no background polling, push, or realtime trigger.
+- The composer requires an explicit friend username, uses the existing friendship-gated recipient directory, and requires explicit selection of one recipient device.
+- Sending reuses the existing SessionEstablisher and MessageSender, then reloads the durable local row returned by the existing message-submission contract.
+- Conversation navigation remains local Compose state with BackHandler; no Navigation Compose, ViewModel, or DI framework was introduced.
+- Empty, loading, error, partial-sync, offline/restart, and handle-less Device bound states are covered by UI tests.
+- Slice 11 added no server endpoint, persistence mechanism, cryptographic primitive, realtime transport, or background worker.
+
+## Next
+
+### Slice 12 — Primary-to-Companion history synchronization
+
+Implement only after the server-side Primary-to-Companion history-sync protocol is defined and accepted. Do not invent the wire protocol in Android.
 
 ## Subsequent planned slices
 
-12. Primary-to-Companion history synchronization once its protocol is defined.
 13. Web Companion client after the Android Primary vertical slice.
 
 These are sequencing directions, not permission to implement future protocol details early.
