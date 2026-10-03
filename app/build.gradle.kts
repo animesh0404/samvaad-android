@@ -1,6 +1,7 @@
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
+    alias(libs.plugins.ksp)
 }
 
 android {
@@ -79,6 +80,12 @@ dependencies {
     // AGPL-3.0-only: local spike only, NOT a distribution artifact.
     implementation(libs.libsignal.android)
     implementation(libs.libsignal.client)
+    // Slice 9 Step 1: durable message/conversation/cursor facts. Room holds
+    // message metadata + opaque/sealed BLOBs only — never private key
+    // material or SessionRecords (those stay in the Keystore vault).
+    implementation(libs.androidx.room.runtime)
+    implementation(libs.androidx.room.ktx)
+    ksp(libs.androidx.room.compiler)
     coreLibraryDesugaring(libs.desugar.jdk.libs)
     testImplementation(libs.junit)
     testImplementation(libs.androidx.compose.ui.test.junit4)

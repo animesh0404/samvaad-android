@@ -45,6 +45,18 @@ data class SkippedEntry(
     val reason: String,
 )
 
+/**
+ * History-ingestion outcome for one server history item (no mailbox
+ * ACK exists for history). `Stored` means the message is now durable
+ * (freshly or already); `Duplicate` means a proven reprocessing with
+ * the row present; `Skipped` carries the fail-closed reason.
+ */
+sealed interface HistoryIngestResult {
+    data object Stored : HistoryIngestResult
+    data object Duplicate : HistoryIngestResult
+    data class Skipped(val reason: String) : HistoryIngestResult
+}
+
 sealed interface InboxFailure {
     /** Transport failure fetching the mailbox: retry the fetch later. */
     data object TransportRetryable : InboxFailure

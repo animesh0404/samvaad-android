@@ -156,4 +156,49 @@ interface E2eeDeviceApi {
         serverAddress: String,
         messageIds: List<java.util.UUID>,
     ): Int
+
+    /**
+     * GET /api/e2ee/conversations/{conversationId}/messages?afterSequence=&limit=.
+     * Returns this device's durable envelopes after [afterSequence],
+     * ascending, participant-only. [afterSequence] is 0-based (0 fetches
+     * from the start); [limit] is 1..100. Readable after mailbox ACK;
+     * ACK never deletes history. Unknown conversation is 404,
+     * non-participant is 403.
+     */
+    @Throws(IOException::class)
+    suspend fun fetchHistory(
+        session: AuthSession,
+        serverAddress: String,
+        conversationId: String,
+        afterSequence: Long,
+        limit: Int,
+    ): List<HistoryItem>
+
+    /**
+     * GET /api/e2ee/sync?conversationId=. Returns this device's stored
+     * cursor for the conversation; an absent cursor reads as 0.
+     * Read-only: fetching history or mailboxes never moves the cursor.
+     */
+    @Throws(IOException::class)
+    suspend fun getSyncCursor(
+        session: AuthSession,
+        serverAddress: String,
+        conversationId: String,
+    ): SyncCursor
+
+    /**
+     * PUT /api/e2ee/sync with `{conversationId, throughSequence}`.
+     * Explicit client assertion of durable processing — the only writer.
+     * [throughSequence] must satisfy 0 <= n <= conversation last
+     * sequence: backward moves and beyond-last advances are 409, repeats
+     * are safe. Callers must advance only through the highest contiguous
+     * locally durable sequence, never through a gap.
+     */
+    @Throws(IOException::class)
+    suspend fun advanceSyncCursor(
+        session: AuthSession,
+        serverAddress: String,
+        conversationId: String,
+        throughSequence: Long,
+    ): SyncCursor
 }

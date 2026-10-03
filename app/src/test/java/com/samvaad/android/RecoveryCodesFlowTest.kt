@@ -123,6 +123,30 @@ class RecoveryCodesFlowTest {
             serverAddress: String,
             messageIds: List<java.util.UUID>,
         ): Int = throw AssertionError("no inbox in this slice")
+
+        override suspend fun fetchHistory(
+            session: AuthSession,
+            serverAddress: String,
+            conversationId: String,
+            afterSequence: Long,
+            limit: Int,
+        ): List<com.samvaad.android.enroll.HistoryItem> =
+            throw AssertionError("no history in this slice")
+
+        override suspend fun getSyncCursor(
+            session: AuthSession,
+            serverAddress: String,
+            conversationId: String,
+        ): com.samvaad.android.enroll.SyncCursor =
+            throw AssertionError("no history in this slice")
+
+        override suspend fun advanceSyncCursor(
+            session: AuthSession,
+            serverAddress: String,
+            conversationId: String,
+            throughSequence: Long,
+        ): com.samvaad.android.enroll.SyncCursor =
+            throw AssertionError("no history in this slice")
     }
 
     private lateinit var context: Context

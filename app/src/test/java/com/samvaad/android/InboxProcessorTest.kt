@@ -1,13 +1,17 @@
 package com.samvaad.android
 
 import android.content.Context
+import androidx.room.InvalidationTracker
+import androidx.sqlite.db.SupportSQLiteOpenHelper
 import androidx.test.core.app.ApplicationProvider
 import com.samvaad.android.crypto.AndroidCryptoVault
 import com.samvaad.android.crypto.AndroidSignalAdapter
 import com.samvaad.android.crypto.CryptoRecordKind
+import com.samvaad.android.crypto.MessageContentSealer
 import com.samvaad.android.crypto.RemotePrekeyBundle
 import com.samvaad.android.crypto.SpikeCryptoMaterial
 import com.samvaad.android.crypto.WrappingKeyProvider
+import com.samvaad.android.db.MessageDatabase
 import com.samvaad.android.enroll.AdoptedDevice
 import com.samvaad.android.enroll.ClaimedDeviceBundle
 import com.samvaad.android.enroll.ClaimedOneTimePrekey
@@ -44,6 +48,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
+import org.junit.After
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -98,6 +103,9 @@ class InboxProcessorTest {
         var fetchHandler: () -> List<MailboxItem> = { emptyList() }
         var ackHandler: suspend (List<UUID>) -> Int =
             { ids -> ids.size }
+        var advanceHandler: suspend (String, Long) -> Long = { _, through -> through }
+        var serverCursor: Long = 0L
+        val advanceCalls = mutableListOf<Pair<String, Long>>()
         var directoryCalls = 0
         var claimCalls = 0
         var submitCalls = 0
@@ -152,6 +160,34 @@ class InboxProcessorTest {
         ): Int {
             ackedBatches.add(messageIds.toList())
             return ackHandler(messageIds)
+        }
+
+        override suspend fun fetchHistory(
+            session: AuthSession,
+            serverAddress: String,
+            conversationId: String,
+            afterSequence: Long,
+            limit: Int,
+        ): List<com.samvaad.android.enroll.HistoryItem> =
+            throw AssertionError("no history in this slice")
+
+        override suspend fun getSyncCursor(
+            session: AuthSession,
+            serverAddress: String,
+            conversationId: String,
+        ): com.samvaad.android.enroll.SyncCursor =
+            com.samvaad.android.enroll.SyncCursor(conversationId, serverCursor)
+
+        override suspend fun advanceSyncCursor(
+            session: AuthSession,
+            serverAddress: String,
+            conversationId: String,
+            throughSequence: Long,
+        ): com.samvaad.android.enroll.SyncCursor {
+            advanceCalls.add(conversationId to throughSequence)
+            val accepted = advanceHandler(conversationId, throughSequence)
+            serverCursor = maxOf(serverCursor, accepted)
+            return com.samvaad.android.enroll.SyncCursor(conversationId, accepted)
         }
     }
 
@@ -209,6 +245,8 @@ class InboxProcessorTest {
     private lateinit var localMeta: FileDeviceMetadataStore
     private lateinit var sessionMeta: FileSessionMetadataStore
     private lateinit var locks: SessionDeviceLocks
+    private lateinit var db: MessageDatabase
+    private lateinit var sealer: MessageContentSealer
 
     private val session = AuthSession(
         identifier = "bob",
@@ -226,6 +264,8 @@ class InboxProcessorTest {
         cryptoVault = cryptoVault,
         sessionVault = sessionVault,
         deviceLocks = locks,
+        db = db,
+        contentSealer = sealer,
     )
 
     @Before
@@ -242,6 +282,15 @@ class InboxProcessorTest {
         localMeta = FileDeviceMetadataStore(context)
         sessionMeta = FileSessionMetadataStore(context)
         locks = SessionDeviceLocks()
+        db = androidx.room.Room.inMemoryDatabaseBuilder(context, MessageDatabase::class.java)
+            .allowMainThreadQueries()
+            .build()
+        sealer = MessageContentSealer(keys)
+    }
+
+    @After
+    fun tearDown() {
+        db.close()
     }
 
     /** Seal Bob's adopted device; retain publics for peer establishment. */
@@ -474,7 +523,7 @@ class InboxProcessorTest {
 
         // Bob replies outbound (shares locks with the processor).
         val sender = MessageSender(
-            api, localMeta, sessionMeta, adapter, cryptoVault, sessionVault, locks
+            api, localMeta, sessionMeta, adapter, cryptoVault, sessionVault, locks, db, sealer
         )
         api.submitHandler = { _, _ ->
             com.samvaad.android.enroll.SubmitMessageResult(
@@ -565,11 +614,24 @@ class InboxProcessorTest {
         bobEstablishesTo(alice)
         val (wire, type) = peerEncrypts(alice, bob)
         api.fetchHandler = { listOf(mailboxItem(ALICE_DEVICE_ID, type, wire)) }
-        // Break seal-time key creation only: load + decrypt still work,
-        // but the post-decrypt seal must fail before any HTTP.
+        // Break SESSION seal-time key creation only: the content sealer
+        // runs on independent keys so plaintext sealing still succeeds
+        // and the failure lands exactly on the post-decrypt session seal.
         keys.failCreate = true
+        val sealerOnOwnKeys = MessageContentSealer(EphemeralKeys())
+        val proc = InboxProcessor(
+            api = api,
+            localMetadata = localMeta,
+            sessions = sessionMeta,
+            adapter = adapter,
+            cryptoVault = cryptoVault,
+            sessionVault = sessionVault,
+            deviceLocks = locks,
+            db = db,
+            contentSealer = sealerOnOwnKeys,
+        )
         try {
-            val result = runBlocking { processor().receive(session, server) } as com.samvaad.android.session.InboxResult.Completed
+            val result = runBlocking { proc.receive(session, server) } as com.samvaad.android.session.InboxResult.Completed
             assertTrue(result.messages.isEmpty())
             assertTrue(result.acked.isEmpty())
             assertEquals("session-persist-failed", result.skipped.single().reason)
@@ -786,7 +848,7 @@ class InboxProcessorTest {
             )
         }
         val sender = MessageSender(
-            api, localMeta, sessionMeta, adapter, cryptoVault, sessionVault, locks
+            api, localMeta, sessionMeta, adapter, cryptoVault, sessionVault, locks, db, sealer
         )
         val inbox = processor()
         runBlocking {
@@ -831,5 +893,267 @@ class InboxProcessorTest {
         assertArrayEquals(PLAINTEXT, result.messages[1].plaintext)
         assertEquals(2, result.acked.size)
         assertTrue(result.skipped.isEmpty())
+    }
+
+    // ---- Slice 9 Step 4: durable inbound state ----
+
+    private fun dao() = db.messageDao()
+
+    private fun inboxRow(messageId: String) = runBlocking { dao().byMessageId(messageId) }
+
+    @Test
+    fun receiveHappy_persistsRowSealsPlaintextAdvancesCursor() {
+        val bob = sealLocalDevice()
+        val alice = freshPeer(ALICE_DEVICE_ID, ALICE_USERNAME, ALICE_SIGNAL_ID, 7001)
+        bobEstablishesTo(alice)
+        val (wire, type) = peerEncrypts(alice, bob)
+        val item = mailboxItem(ALICE_DEVICE_ID, type, wire, sequenceNumber = 1L)
+        api.fetchHandler = { listOf(item) }
+        val result = runBlocking { processor().receive(session, server) } as com.samvaad.android.session.InboxResult.Completed
+        assertEquals(1, result.messages.size)
+
+        // Durable row keyed by the server messageId, acked, with exact bytes.
+        val row = inboxRow(item.messageId)!!
+        assertEquals(com.samvaad.android.db.MessageDirection.IN, row.direction)
+        assertEquals(true, row.acked)
+        assertEquals(null, row.sendState)
+        assertEquals(null, row.requestId)
+        assertEquals(null, row.serverMessageId)
+        assertEquals(ALICE_DEVICE_ID, row.senderDeviceId)
+        assertEquals(LOCAL_DEVICE_ID, row.recipientDeviceId)
+        assertEquals(type, row.envelopeType)
+        assertEquals(1L, row.sequenceNumber)
+        assertArrayEquals(wire, row.ciphertext)
+        // Sealed plaintext opens; no cleartext in the row.
+        assertArrayEquals(PLAINTEXT, sealer.open(item.messageId, row.plaintextSealed!!))
+        // Conversation observed + cursor advanced through contiguous 1.
+        val conv = runBlocking { dao().conversation(item.conversationId) }!!
+        assertEquals(1L, conv.lastSeenSequence)
+        assertEquals(1L, conv.cursorThrough)
+        assertEquals(listOf(item.conversationId to 1L), api.advanceCalls)
+    }
+
+    @Test
+    fun noPlaintextInDatabaseFiles() {
+        val bob = sealLocalDevice()
+        val alice = freshPeer(ALICE_DEVICE_ID, ALICE_USERNAME, ALICE_SIGNAL_ID, 7001)
+        bobEstablishesTo(alice)
+        val (wire, type) = peerEncrypts(alice, bob)
+        api.fetchHandler = { listOf(mailboxItem(ALICE_DEVICE_ID, type, wire)) }
+        runBlocking { processor().receive(session, server) }
+        db.close()
+        // Reopen to checkpoint WAL, then scan every message-state file.
+        val reopened = MessageDatabase.open(context)
+        try {
+            runBlocking { reopened.messageDao().byMessageId("absent") }
+        } finally {
+            reopened.close()
+        }
+        val dir = File(File(context.noBackupFilesDir, MessageDatabase.SUBDIR), "")
+        val files = dir.listFiles()?.toList().orEmpty()
+        assertTrue(files.isNotEmpty())
+        files.forEach { file ->
+            if (file.isFile) {
+                assertFalse(
+                    "cleartext in ${file.name}",
+                    file.readBytes().toList().windowed(PLAINTEXT.size).any { it.toByteArray().contentEquals(PLAINTEXT) },
+                )
+            }
+        }
+    }
+
+    @Test
+    fun duplicateMessageId_absorbed_notOverwritten() {
+        val bob = sealLocalDevice()
+        val alice = freshPeer(ALICE_DEVICE_ID, ALICE_USERNAME, ALICE_SIGNAL_ID, 7001)
+        bobEstablishesTo(alice)
+        val (wire, type) = peerEncrypts(alice, bob)
+        val item = mailboxItem(ALICE_DEVICE_ID, type, wire)
+        // A stale row already claims this messageId with other bytes.
+        val staleCipher = ByteArray(16) { 0x2B }
+        val staleSealed = sealer.seal(item.messageId, "stale".toByteArray())
+        runBlocking {
+            dao().insertIgnore(
+                com.samvaad.android.db.MessageEntity(
+                    messageId = item.messageId,
+                    conversationId = item.conversationId,
+                    sequenceNumber = item.sequenceNumber,
+                    direction = com.samvaad.android.db.MessageDirection.IN,
+                    senderDeviceId = item.senderDeviceId,
+                    recipientDeviceId = LOCAL_DEVICE_ID,
+                    envelopeType = item.envelopeType,
+                    ciphertext = staleCipher,
+                    plaintextSealed = staleSealed,
+                    sendState = null,
+                    acked = false,
+                    requestId = null,
+                    serverMessageId = null,
+                    serverTimestamp = item.serverTimestamp,
+                    createdAt = 1L,
+                )
+            )
+        }
+        api.fetchHandler = { listOf(item) }
+        val result = runBlocking { processor().receive(session, server) } as com.samvaad.android.session.InboxResult.Completed
+        // Recovery proceeds (fresh decrypt against current disk state),
+        // delivers, and ACKs — but the durable bytes are never replaced.
+        assertEquals(1, result.messages.size)
+        assertArrayEquals(PLAINTEXT, result.messages.single().plaintext)
+        val row = inboxRow(item.messageId)!!
+        assertArrayEquals(staleCipher, row.ciphertext)
+        assertArrayEquals(staleSealed, row.plaintextSealed)
+    }
+
+    @Test
+    fun markAckFailure_convergesOnRedelivery() {
+        val bob = sealLocalDevice()
+        val alice = freshPeer(ALICE_DEVICE_ID, ALICE_USERNAME, ALICE_SIGNAL_ID, 7001)
+        bobEstablishesTo(alice)
+        val (wire, type) = peerEncrypts(alice, bob)
+        val item = mailboxItem(ALICE_DEVICE_ID, type, wire)
+        api.fetchHandler = { listOf(item) }
+        // Fail ONLY the local ACK flag: wrap the real DAO so every other
+        // store operation behaves normally.
+        val realDao = dao()
+        var failMark = true
+        val failingDb = object : MessageDatabase() {
+            override fun messageDao(): com.samvaad.android.db.MessageDao =
+                object : com.samvaad.android.db.MessageDao by realDao {
+                    override suspend fun markAcked(messageId: String): Int {
+                        if (failMark) throw android.database.sqlite.SQLiteException("injected")
+                        return realDao.markAcked(messageId)
+                    }
+                }
+
+            override fun createOpenHelper(config: androidx.room.DatabaseConfiguration):
+                SupportSQLiteOpenHelper =
+                throw AssertionError("never opened directly")
+
+            override fun createInvalidationTracker(): InvalidationTracker =
+                throw AssertionError("never opened directly")
+
+            override fun clearAllTables() {
+                throw AssertionError("never opened directly")
+            }
+        }
+        val proc = InboxProcessor(
+            api = api,
+            localMetadata = localMeta,
+            sessions = sessionMeta,
+            adapter = adapter,
+            cryptoVault = cryptoVault,
+            sessionVault = sessionVault,
+            deviceLocks = locks,
+            db = failingDb,
+            contentSealer = sealer,
+        )
+        val first = runBlocking { proc.receive(session, server) } as com.samvaad.android.session.InboxResult.Completed
+        // Plaintext delivered exactly once despite the ACK failure.
+        assertEquals(1, first.messages.size)
+        assertTrue(first.acked.isEmpty())
+        assertEquals(listOf(item.messageId), first.unacked)
+        assertEquals(false, inboxRow(item.messageId)!!.acked)
+
+        // Next fetch redelivers; the duplicate path re-ACKs and the flag
+        // converges without a second plaintext delivery.
+        failMark = false
+        val second = runBlocking { proc.receive(session, server) } as com.samvaad.android.session.InboxResult.Completed
+        assertTrue(second.messages.isEmpty())
+        assertEquals(listOf(item.messageId), second.acked)
+        assertEquals(true, inboxRow(item.messageId)!!.acked)
+    }
+
+    @Test
+    fun cursorHoldsAcrossGap_releasesOnFill() {
+        val bob = sealLocalDevice()
+        val alice = freshPeer(ALICE_DEVICE_ID, ALICE_USERNAME, ALICE_SIGNAL_ID, 7001)
+        bobEstablishesTo(alice)
+        val conv = "44444444-4444-4444-4444-444444444444"
+        // History already holds 1,2,5 (5 arrived early, 3,4 missing).
+        val stored = { id: String, seq: Long ->
+            com.samvaad.android.db.MessageEntity(
+                messageId = id,
+                conversationId = conv,
+                sequenceNumber = seq,
+                direction = com.samvaad.android.db.MessageDirection.IN,
+                senderDeviceId = ALICE_DEVICE_ID,
+                recipientDeviceId = LOCAL_DEVICE_ID,
+                envelopeType = "RATCHET",
+                ciphertext = ByteArray(8) { seq.toByte() },
+                plaintextSealed = sealer.seal(id, PLAINTEXT),
+                sendState = null,
+                acked = true,
+                requestId = null,
+                serverMessageId = id,
+                serverTimestamp = "2026-10-02T10:00:00",
+                createdAt = seq,
+            )
+        }
+        runBlocking {
+            dao().insertIgnore(stored("m-1", 1L))
+            dao().insertIgnore(stored("m-2", 2L))
+            dao().insertIgnore(stored("m-5", 5L))
+            dao().upsertConversation(
+                com.samvaad.android.db.ConversationEntity(conv, 5L, 2L)
+            )
+        }
+        // A real seq-6 message arrives: contiguous stays 2, no advance.
+        val (wire6, type6) = peerEncrypts(alice, bob)
+        api.fetchHandler = { listOf(mailboxItem(ALICE_DEVICE_ID, type6, wire6, sequenceNumber = 6L)) }
+        val first = runBlocking { processor().receive(session, server) } as com.samvaad.android.session.InboxResult.Completed
+        assertEquals(1, first.messages.size)
+        assertTrue(api.advanceCalls.isEmpty())
+        assertEquals(2L, runBlocking { dao().conversation(conv) }!!.cursorThrough)
+        // Gap fills with real seq-3 and seq-4: contiguous becomes 6.
+        val (wire3, type3) = peerEncryptsAgain(alice, bob)
+        val (wire4, type4) = peerEncryptsAgain(alice, bob)
+        api.fetchHandler = {
+            listOf(
+                mailboxItem(ALICE_DEVICE_ID, type3, wire3, sequenceNumber = 3L),
+                mailboxItem(ALICE_DEVICE_ID, type4, wire4, sequenceNumber = 4L),
+            )
+        }
+        val second = runBlocking { processor().receive(session, server) } as com.samvaad.android.session.InboxResult.Completed
+        assertEquals(2, second.messages.size)
+        // Contiguous advanced twice: 3 when the first gap closed, then 6.
+        assertEquals(listOf(conv to 3L, conv to 6L), api.advanceCalls)
+        assertEquals(6L, runBlocking { dao().conversation(conv) }!!.cursorThrough)
+    }
+
+    @Test
+    fun cursorFailure_preservesMessage() {
+        val bob = sealLocalDevice()
+        val alice = freshPeer(ALICE_DEVICE_ID, ALICE_USERNAME, ALICE_SIGNAL_ID, 7001)
+        bobEstablishesTo(alice)
+        val (wire, type) = peerEncrypts(alice, bob)
+        api.fetchHandler = { listOf(mailboxItem(ALICE_DEVICE_ID, type, wire, sequenceNumber = 1L)) }
+        api.advanceHandler = { _, _ -> throw EnrollException.Transport() }
+        val result = runBlocking { processor().receive(session, server) } as com.samvaad.android.session.InboxResult.Completed
+        // Message durable + ACKED; only the cursor lags.
+        assertEquals(1, result.messages.size)
+        assertEquals(1, result.acked.size)
+        assertEquals(0L, runBlocking { dao().conversation("44444444-4444-4444-4444-444444444444") }!!.cursorThrough)
+        // A later receive retries the advancement.
+        api.advanceHandler = { _, through -> through }
+        api.fetchHandler = { emptyList() }
+        runBlocking { processor().receive(session, server) }
+        // Empty batch performs no advancement by itself…
+        assertEquals(0L, runBlocking { dao().conversation("44444444-4444-4444-4444-444444444444") }!!.cursorThrough)
+    }
+
+    @Test
+    fun cursorConflict_convergesToServer() {
+        val bob = sealLocalDevice()
+        val alice = freshPeer(ALICE_DEVICE_ID, ALICE_USERNAME, ALICE_SIGNAL_ID, 7001)
+        bobEstablishesTo(alice)
+        val (wire, type) = peerEncrypts(alice, bob)
+        api.fetchHandler = { listOf(mailboxItem(ALICE_DEVICE_ID, type, wire, sequenceNumber = 1L)) }
+        api.advanceHandler = { _, _ -> throw EnrollException.Conflict() }
+        api.serverCursor = 10L
+        val result = runBlocking { processor().receive(session, server) } as com.samvaad.android.session.InboxResult.Completed
+        assertEquals(1, result.messages.size)
+        assertEquals(1, result.acked.size)
+        // Server authoritative: local cache converges instead of forcing.
+        assertEquals(10L, runBlocking { dao().conversation("44444444-4444-4444-4444-444444444444") }!!.cursorThrough)
     }
 }

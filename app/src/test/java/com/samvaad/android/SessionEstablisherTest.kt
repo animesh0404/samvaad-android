@@ -135,6 +135,30 @@ class SessionEstablisherTest {
             serverAddress: String,
             messageIds: List<UUID>,
         ): Int = throw AssertionError("no inbox in this slice")
+
+        override suspend fun fetchHistory(
+            session: AuthSession,
+            serverAddress: String,
+            conversationId: String,
+            afterSequence: Long,
+            limit: Int,
+        ): List<com.samvaad.android.enroll.HistoryItem> =
+            throw AssertionError("no history in this slice")
+
+        override suspend fun getSyncCursor(
+            session: AuthSession,
+            serverAddress: String,
+            conversationId: String,
+        ): com.samvaad.android.enroll.SyncCursor =
+            throw AssertionError("no history in this slice")
+
+        override suspend fun advanceSyncCursor(
+            session: AuthSession,
+            serverAddress: String,
+            conversationId: String,
+            throughSequence: Long,
+        ): com.samvaad.android.enroll.SyncCursor =
+            throw AssertionError("no history in this slice")
     }
 
     /** Remote device fixture: real libsignal public material as wire B64. */

@@ -13,10 +13,13 @@ package com.samvaad.android.session
  */
 sealed interface SendResult {
     /** Ciphertext accepted by the server. [createdNew] is false on an
-     * identical-requestId replay. */
+     * identical-requestId replay. [localMessageId] is the durable local
+     * row identity (primary key), distinct from the server-assigned
+     * [messageId] — the stable handle for local correlation. */
     data class Sent(
         val entry: SignalSessionEntry,
         val messageId: String,
+        val localMessageId: String,
         val conversationId: String,
         val sequenceNumber: Long,
         val envelopeType: String,
@@ -66,4 +69,16 @@ sealed interface SendFailure {
 
     /** Any other server rejection, including malformed success bodies. */
     data class Rejected(val reason: String) : SendFailure
+}
+
+/**
+ * One recovered unfinished outbound row. `Resubmitted` replays the
+ * stored bytes/requestId (never re-encrypts); `Superseded` discarded an
+ * uncommitted `PENDING_SEAL` attempt and sent fresh (new IDs);
+ * `RowFailed` preserves the offending failure, row included.
+ */
+sealed interface RecoverOutcome {
+    data class Resubmitted(val messageId: String, val sent: SendResult.Sent) : RecoverOutcome
+    data class Superseded(val oldMessageId: String, val fresh: SendResult) : RecoverOutcome
+    data class RowFailed(val messageId: String, val failed: SendResult.Failed) : RecoverOutcome
 }

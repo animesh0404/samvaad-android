@@ -1,6 +1,7 @@
 package com.samvaad.android.enroll
 
 import com.samvaad.android.AuthSession
+import com.samvaad.android.crypto.SpikeCryptoMaterial
 import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
@@ -257,6 +258,124 @@ class HttpE2eeDeviceApi(
     private fun classifyAck(code: Int): EnrollException = when (code) {
         HttpURLConnection.HTTP_UNAUTHORIZED -> EnrollException.Unauthorized()
         HttpURLConnection.HTTP_FORBIDDEN -> EnrollException.Forbidden()
+        else -> EnrollException.ServerRejected()
+    }
+
+    override suspend fun fetchHistory(
+        session: AuthSession,
+        serverAddress: String,
+        conversationId: String,
+        afterSequence: Long,
+        limit: Int,
+    ): List<HistoryItem> = withContext(Dispatchers.IO) {
+        require(conversationId.isNotBlank()) { "conversationId must be present" }
+        require(afterSequence >= 0) { "afterSequence must be >= 0" }
+        require(limit in 1..100) { "history limit must be 1..100" }
+        // UUIDs carry only hex + hyphens, but validate shape anyway so a
+        // malformed identifier fails locally instead of hitting the wire.
+        java.util.UUID.fromString(conversationId)
+        val (code, response) = get(
+            session,
+            serverAddress,
+            "/api/e2ee/conversations/$conversationId/messages?afterSequence=$afterSequence&limit=$limit",
+        )
+        if (code != HttpURLConnection.HTTP_OK) {
+            throw classifyHistory(code)
+        }
+        try {
+            val array = JSONArray(response)
+            List(array.length()) { i -> parseHistoryItem(array.getJSONObject(i)) }
+        } catch (e: JSONException) {
+            throw EnrollException.Malformed(e)
+        } catch (e: IllegalArgumentException) {
+            throw EnrollException.Malformed(e)
+        }
+    }
+
+    override suspend fun getSyncCursor(
+        session: AuthSession,
+        serverAddress: String,
+        conversationId: String,
+    ): SyncCursor = withContext(Dispatchers.IO) {
+        require(conversationId.isNotBlank()) { "conversationId must be present" }
+        java.util.UUID.fromString(conversationId)
+        val (code, response) = get(
+            session, serverAddress, "/api/e2ee/sync?conversationId=$conversationId"
+        )
+        if (code != HttpURLConnection.HTTP_OK) {
+            throw classifyHistory(code)
+        }
+        try {
+            parseCursor(JSONObject(response))
+        } catch (e: JSONException) {
+            throw EnrollException.Malformed(e)
+        }
+    }
+
+    override suspend fun advanceSyncCursor(
+        session: AuthSession,
+        serverAddress: String,
+        conversationId: String,
+        throughSequence: Long,
+    ): SyncCursor = withContext(Dispatchers.IO) {
+        require(conversationId.isNotBlank()) { "conversationId must be present" }
+        require(throughSequence >= 0) { "throughSequence must be >= 0" }
+        java.util.UUID.fromString(conversationId)
+        val (code, response) = put(
+            session,
+            serverAddress,
+            "/api/e2ee/sync",
+            JSONObject()
+                .put("conversationId", conversationId)
+                .put("throughSequence", throughSequence)
+                .toString(),
+        )
+        if (code != HttpURLConnection.HTTP_OK) {
+            throw classifyHistory(code)
+        }
+        try {
+            parseCursor(JSONObject(response))
+        } catch (e: JSONException) {
+            throw EnrollException.Malformed(e)
+        }
+    }
+
+    private fun parseHistoryItem(json: JSONObject): HistoryItem {
+        val ciphertext = json.getString("ciphertext")
+        // Transport-encoding gate: history pages feed durable persistence,
+        // so an undecodable page fails the whole fetch here. (Mailbox
+        // items deliberately defer this to per-entry skip reasons because
+        // they are transient and individually skippable.)
+        SpikeCryptoMaterial.decodeBase64(ciphertext)
+        return HistoryItem(
+            messageId = json.getString("messageId"),
+            conversationId = json.getString("conversationId"),
+            sequenceNumber = json.getLong("sequenceNumber"),
+            senderUserId = json.getString("senderUserId"),
+            senderDeviceId = json.getString("senderDeviceId"),
+            envelopeType = json.getString("envelopeType"),
+            ciphertextBase64 = ciphertext,
+            serverTimestamp = json.getString("serverTimestamp"),
+        )
+    }
+
+    private fun parseCursor(json: JSONObject): SyncCursor = SyncCursor(
+        conversationId = json.getString("conversationId"),
+        throughSequence = json.getLong("throughSequence"),
+    )
+
+    /**
+     * History/cursor classifier. Documented outcomes: 401 unauthenticated;
+     * 404 unknown conversation; 403 non-participant or inactive device;
+     * 400 bad pagination/shape; 409 backward or beyond-last cursor move.
+     * Anything else is an unexpected rejection.
+     */
+    private fun classifyHistory(code: Int): EnrollException = when (code) {
+        HttpURLConnection.HTTP_UNAUTHORIZED -> EnrollException.Unauthorized()
+        HttpURLConnection.HTTP_BAD_REQUEST -> EnrollException.BadRequest()
+        HttpURLConnection.HTTP_FORBIDDEN -> EnrollException.Forbidden()
+        HttpURLConnection.HTTP_NOT_FOUND -> EnrollException.NotFound()
+        HttpURLConnection.HTTP_CONFLICT -> EnrollException.Conflict()
         else -> EnrollException.ServerRejected()
     }
 

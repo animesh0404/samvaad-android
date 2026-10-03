@@ -7,9 +7,14 @@ import com.samvaad.android.crypto.AndroidCryptoVault
 import com.samvaad.android.crypto.AndroidKeystoreKeyProvider
 import com.samvaad.android.crypto.AndroidSignalAdapter
 import com.samvaad.android.crypto.CryptoRecordKind
+import com.samvaad.android.crypto.MessageContentSealer
 import com.samvaad.android.crypto.RemotePrekeyBundle
 import com.samvaad.android.crypto.SessionCryptoException
 import com.samvaad.android.crypto.SpikeCryptoMaterial
+import com.samvaad.android.db.ConversationEntity
+import com.samvaad.android.db.MessageDatabase
+import com.samvaad.android.db.MessageDirection
+import com.samvaad.android.db.MessageEntity
 import com.samvaad.android.session.EstablishedVia
 import com.samvaad.android.session.FileSessionMetadataStore
 import com.samvaad.android.session.SessionEstablisher
@@ -17,6 +22,7 @@ import com.samvaad.android.session.SignalSessionEntry
 import java.io.File
 import java.util.Base64
 import java.util.UUID
+import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertThrows
@@ -59,6 +65,7 @@ class InboxRestartInstrumentedTest {
     private fun phaseFile(): File = File(context.cacheDir, "inbox-restart-phase.txt")
 
     private val aliceDeviceId = "22222222-2222-3333-4444-555555555555"
+    private val bobDeviceId = "11111111-1111-1111-1111-111111111111"
     private val plaintext = "slice8-inbox-plaintext".toByteArray(Charsets.UTF_8)
 
     private data class Side(
@@ -214,6 +221,45 @@ class InboxRestartInstrumentedTest {
         )
         assertEquals(AndroidSignalAdapter.ENVELOPE_RATCHET, reply.envelopeType)
 
+        // Durable inbox row exactly as the processor would persist it:
+        // server messageId PK, exact wire bytes, sealed plaintext.
+        val inboxMessageId = "33333333-3333-3333-3333-333333333333"
+        val sealer = MessageContentSealer(AndroidKeystoreKeyProvider())
+        val db = MessageDatabase.open(context)
+        try {
+            runBlocking {
+                // Clean slate: an earlier recover run may have marked this
+                // fixed test id ACKED (insert-ignore would keep it).
+                db.messageDao().deleteMessage(inboxMessageId)
+                db.messageDao().insertIgnore(
+                    MessageEntity(
+                        messageId = inboxMessageId,
+                        conversationId = "44444444-4444-4444-4444-444444444444",
+                        sequenceNumber = 1L,
+                        direction = MessageDirection.IN,
+                        senderDeviceId = aliceDeviceId,
+                        recipientDeviceId = bobDeviceId,
+                        envelopeType = AndroidSignalAdapter.ENVELOPE_PREKEY_INIT,
+                        ciphertext = first.ciphertextBytes.copyOf(),
+                        plaintextSealed = sealer.seal(inboxMessageId, plaintext),
+                        sendState = null,
+                        acked = false,
+                        requestId = null,
+                        serverMessageId = null,
+                        serverTimestamp = "2026-10-02T10:00:00",
+                        createdAt = System.currentTimeMillis(),
+                    )
+                )
+                db.messageDao().upsertConversation(
+                    ConversationEntity(
+                        "44444444-4444-4444-4444-444444444444", 1L, 0L
+                    )
+                )
+            }
+        } finally {
+            db.close()
+        }
+
         phaseFile().writeText(
             listOf(
                 "ALICE_IDENTITY_B64:" + Base64.getEncoder().encodeToString(alice.identity.publicKey),
@@ -229,6 +275,7 @@ class InboxRestartInstrumentedTest {
                 "BOB_OTPK_HANDLES:" + bob.otpks.joinToString(",") { it.privateHandle.id.toString() },
                 "PREKEY1_B64:" + Base64.getEncoder().encodeToString(first.ciphertextBytes),
                 "REPLY_B64:" + Base64.getEncoder().encodeToString(reply.ciphertextBytes),
+                "INBOX_MESSAGE_ID:$inboxMessageId",
             ).joinToString("\n")
         )
         assertTrue(phaseFile().isFile)
@@ -366,6 +413,28 @@ class InboxRestartInstrumentedTest {
                 envelopeType = AndroidSignalAdapter.ENVELOPE_PREKEY_INIT,
                 ciphertext = prekey1Bytes,
             )
+        }
+
+        // The durable inbox row survived restart alongside the session:
+        // exact bytes, sealed plaintext opens with the Keystore sealer.
+        val rowDb = MessageDatabase.open(context)
+        try {
+            runBlocking {
+                val row = rowDb.messageDao().byMessageId(value("INBOX_MESSAGE_ID"))!!
+                assertEquals(MessageDirection.IN, row.direction)
+                assertEquals(false, row.acked)
+                assertArrayEquals(prekey1Bytes, row.ciphertext)
+                assertArrayEquals(
+                    plaintext,
+                    MessageContentSealer(AndroidKeystoreKeyProvider()).open(
+                        value("INBOX_MESSAGE_ID"), row.plaintextSealed!!
+                    ),
+                )
+                assertEquals(1, rowDb.messageDao().markAcked(value("INBOX_MESSAGE_ID")))
+                assertEquals(true, rowDb.messageDao().byMessageId(value("INBOX_MESSAGE_ID"))!!.acked)
+            }
+        } finally {
+            rowDb.close()
         }
     }
 

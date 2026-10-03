@@ -5,9 +5,15 @@ import com.samvaad.android.crypto.AndroidCryptoVault
 import com.samvaad.android.crypto.AndroidSignalAdapter
 import com.samvaad.android.crypto.CryptoRecordKind
 import com.samvaad.android.crypto.CryptoRecoveryException
+import com.samvaad.android.crypto.MessageContentSealer
 import com.samvaad.android.crypto.SessionCryptoException
 import com.samvaad.android.crypto.SpikeCryptoMaterial
 import com.samvaad.android.crypto.VaultException
+import com.samvaad.android.db.MessageDao
+import com.samvaad.android.db.MessageDatabase
+import com.samvaad.android.db.MessageDirection
+import com.samvaad.android.db.MessageEntity
+import com.samvaad.android.db.SendState
 import com.samvaad.android.enroll.DeviceMetadataStore
 import com.samvaad.android.enroll.E2eeDeviceApi
 import com.samvaad.android.enroll.EnrollException
@@ -15,26 +21,27 @@ import com.samvaad.android.enroll.MessageEnvelopeSubmit
 import com.samvaad.android.enroll.SubmitMessageResult
 import java.io.IOException
 import java.util.UUID
+import kotlinx.coroutines.CancellationException
 
 /**
  * Headless outbound message sender. Kept out of Compose by design;
  * testable without UI.
  *
- * Normal path: existing session reuse → encrypt → seal post-encrypt
- * session → submit. This class never performs recipient discovery or
- * OTPK claims (zero on the send path), never generates identities or
- * sessions, and never persists message content or request IDs — the
- * retry holder below is memory-only and dies with the operation.
+ * Durable state machine per message row: `PENDING_SEAL` → `SEALED` →
+ * `SENT` (terminal). The Room row is both the crash-recoverable outbox
+ * attempt and, eventually, the durable history row: encrypt → insert
+ * `PENDING_SEAL` (ciphertext + sealed plaintext + requestId) → seal the
+ * ratchet-advanced session → mark `SEALED` → submit the exact stored
+ * bytes → mark `SENT` with the server-assigned identity. A `SEALED` row
+ * is never re-encrypted and its bytes/requestId never mutated; a
+ * `PENDING_SEAL` row can never be submitted (its session may be
+ * uncommitted) and is superseded by delete + fresh send instead.
  *
- * Critical ordering: the ratchet-advanced session is sealed BEFORE any
- * HTTP request. Seal failure means no HTTP. HTTP failure after a
- * successful seal retries with byte-identical request content while the
- * operation is alive; a new logical message always mints a fresh
- * requestId and re-encrypts from current state.
- *
- * Sends to the same remote device execute sequentially under a
- * per-device mutex (tied to this instance's lifetime); different
- * devices proceed independently. Construction is explicit; no DI.
+ * This class never performs recipient discovery or OTPK claims (zero on
+ * the send path), never generates identities or sessions, and returns
+ * plaintext-bearing results in memory only. Sends to the same remote
+ * device execute sequentially under the shared [deviceLocks] holder,
+ * which MUST be the same instance the inbox processor uses. No DI.
  */
 class MessageSender(
     private val api: E2eeDeviceApi,
@@ -50,7 +57,10 @@ class MessageSender(
      * peer device. Defaults to a private holder (existing tests).
      */
     private val deviceLocks: SessionDeviceLocks = SessionDeviceLocks(),
+    private val db: MessageDatabase,
+    private val contentSealer: MessageContentSealer,
 ) {
+    private fun dao(): MessageDao = db.messageDao()
 
     /**
      * Encrypt [plaintext] for exactly [remoteDeviceId] of
@@ -73,6 +83,46 @@ class MessageSender(
         }
         return deviceLocks.withDeviceLock(remoteDeviceId) {
             doSend(session, serverAddress, remoteUsername, remoteDeviceId, plaintext)
+        }
+    }
+
+    /**
+     * Recover this device's unfinished outbound rows. `SEALED` rows
+     * resubmit byte-identically (server idempotency arbitrates);
+     * `PENDING_SEAL` rows are superseded (their session may be
+     * uncommitted) by delete + fresh send. Never re-encrypts a `SEALED`
+     * row, never mutates stored bytes. Returns one outcome per row;
+     * empty means nothing was pending. Not a boot sweep — the caller
+     * decides when to invoke it.
+     */
+    suspend fun recoverUnsent(
+        session: AuthSession,
+        serverAddress: String,
+        remoteUsername: String,
+        remoteDeviceId: String,
+    ): List<RecoverOutcome> {
+        if (remoteUsername.isBlank() || remoteDeviceId.isBlank()) return emptyList()
+        return deviceLocks.withDeviceLock(remoteDeviceId) {
+            val rows = try {
+                dao().pendingOutbox()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                return@withDeviceLock listOf(
+                    RecoverOutcome.RowFailed(
+                        "*",
+                        SendResult.Failed(SendFailure.Rejected("message-store-failed")),
+                    )
+                )
+            }
+            rows.filter { it.recipientDeviceId == remoteDeviceId }
+                .sortedBy { it.createdAt }
+                .map { row ->
+                    when (row.sendState) {
+                        SendState.SEALED -> resubmitRow(session, serverAddress, row)
+                        else -> supersedeRow(session, serverAddress, remoteUsername, remoteDeviceId, row)
+                    }
+                }
         }
     }
 
@@ -122,6 +172,7 @@ class MessageSender(
             return SendResult.Failed(SendFailure.IdentityMismatch)
         }
 
+        val messageId = UUID.randomUUID().toString()
         val requestId = UUID.randomUUID()
         val encrypted = try {
             adapter.encryptForSubmit(
@@ -142,6 +193,44 @@ class MessageSender(
             // was discarded before storing — no HTTP either way.
             return SendResult.Failed(SendFailure.Rejected("encrypt-failed"))
         }
+        // Seal the plaintext for the durable row before anything else is
+        // persisted: cleartext must never reach the database.
+        val sealedPlaintext = try {
+            contentSealer.seal(messageId, plaintext)
+        } catch (_: VaultException.WrappingKeyMissing) {
+            return SendResult.Failed(SendFailure.CryptoUnavailable)
+        } catch (_: VaultException) {
+            return SendResult.Failed(SendFailure.Rejected("content-seal-failed"))
+        } catch (_: IllegalArgumentException) {
+            return SendResult.Failed(SendFailure.Rejected("content-seal-failed"))
+        }
+        // Durable attempt row first: from here on, every crash window is
+        // recoverable (supersede while PENDING_SEAL, resubmit once SEALED).
+        val row = MessageEntity(
+            messageId = messageId,
+            conversationId = "",
+            sequenceNumber = 0L,
+            direction = MessageDirection.OUT,
+            senderDeviceId = adopted.deviceId,
+            recipientDeviceId = entry.remoteDeviceId,
+            envelopeType = encrypted.envelopeType,
+            ciphertext = encrypted.ciphertextBytes,
+            plaintextSealed = sealedPlaintext,
+            sendState = SendState.PENDING_SEAL,
+            acked = false,
+            requestId = requestId.toString(),
+            serverMessageId = null,
+            serverTimestamp = "",
+            createdAt = System.currentTimeMillis(),
+        )
+        try {
+            val rowId = dao().insertIgnore(row)
+            if (rowId == -1L) return SendResult.Failed(SendFailure.Rejected("message-conflict"))
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            return SendResult.Failed(SendFailure.Rejected("message-store-failed"))
+        }
         // Seal BEFORE any HTTP: a persistence failure must never leave a
         // submitted ciphertext ahead of the durable ratchet state.
         try {
@@ -155,6 +244,15 @@ class MessageSender(
         } catch (_: VaultException) {
             return SendResult.Failed(SendFailure.SessionUnavailable("session-persist-failed"))
         }
+        try {
+            if (dao().markSealed(messageId) != 1) {
+                return SendResult.Failed(SendFailure.Rejected("message-store-failed"))
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            return SendResult.Failed(SendFailure.Rejected("message-store-failed"))
+        }
 
         val envelope = MessageEnvelopeSubmit(
             senderDeviceId = adopted.deviceId,
@@ -162,8 +260,86 @@ class MessageSender(
             envelopeType = encrypted.envelopeType,
             ciphertextBase64 = SpikeCryptoMaterial.encodeBase64(encrypted.ciphertextBytes),
         )
-        val attempt = LiveAttempt(session, serverAddress, requestId, envelope, entry)
+        val attempt = LiveAttempt(session, serverAddress, messageId, requestId, envelope, entry)
         return submitAttempt(attempt)
+    }
+
+    /** Resubmit a `SEALED` row byte-identically; never re-encrypts. */
+    private suspend fun resubmitRow(
+        session: AuthSession,
+        serverAddress: String,
+        row: MessageEntity,
+    ): RecoverOutcome {
+        val storedRequestId = try {
+            UUID.fromString(row.requestId)
+        } catch (_: IllegalArgumentException) {
+            return RecoverOutcome.RowFailed(
+                row.messageId, SendResult.Failed(SendFailure.Rejected("message-store-failed"))
+            )
+        }
+        val storedCiphertext = row.ciphertext
+            ?: return RecoverOutcome.RowFailed(
+                row.messageId, SendResult.Failed(SendFailure.Rejected("message-store-failed"))
+            )
+        val entry = sessions.read(row.recipientDeviceId)
+            ?: return RecoverOutcome.RowFailed(
+                row.messageId, SendResult.Failed(SendFailure.SessionUnavailable("no-session"))
+            )
+        val envelope = MessageEnvelopeSubmit(
+            senderDeviceId = row.senderDeviceId,
+            recipientDeviceId = row.recipientDeviceId,
+            envelopeType = row.envelopeType,
+            ciphertextBase64 = SpikeCryptoMaterial.encodeBase64(storedCiphertext),
+        )
+        return when (
+            val result = submitAttempt(
+                LiveAttempt(session, serverAddress, row.messageId, storedRequestId, envelope, entry)
+            )
+        ) {
+            is SendResult.Sent -> RecoverOutcome.Resubmitted(row.messageId, result)
+            is SendResult.Failed -> RecoverOutcome.RowFailed(row.messageId, result)
+        }
+    }
+
+    /**
+     * Supersede a `PENDING_SEAL` row: its session may be uncommitted, so
+     * its bytes/requestId must never be submitted. Open the sealed
+     * plaintext (fail closed, row kept), delete the row, then send fresh
+     * through the normal path (new messageId + requestId).
+     */
+    private suspend fun supersedeRow(
+        session: AuthSession,
+        serverAddress: String,
+        remoteUsername: String,
+        remoteDeviceId: String,
+        row: MessageEntity,
+    ): RecoverOutcome {
+        val sealedPlaintext = row.plaintextSealed
+            ?: return RecoverOutcome.RowFailed(
+                row.messageId, SendResult.Failed(SendFailure.Rejected("message-store-failed"))
+            )
+        val plaintext = try {
+            contentSealer.open(row.messageId, sealedPlaintext)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            return RecoverOutcome.RowFailed(
+                row.messageId, SendResult.Failed(SendFailure.CryptoUnavailable)
+            )
+        }
+        try {
+            dao().deleteMessage(row.messageId)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            return RecoverOutcome.RowFailed(
+                row.messageId, SendResult.Failed(SendFailure.Rejected("message-store-failed"))
+            )
+        }
+        return RecoverOutcome.Superseded(
+            oldMessageId = row.messageId,
+            fresh = doSend(session, serverAddress, remoteUsername, remoteDeviceId, plaintext),
+        )
     }
 
     /**
@@ -175,6 +351,7 @@ class MessageSender(
     private inner class LiveAttempt(
         private val session: AuthSession,
         private val serverAddress: String,
+        val localMessageId: String,
         private val requestId: UUID,
         val envelope: MessageEnvelopeSubmit,
         val entry: SignalSessionEntry,
@@ -193,9 +370,28 @@ class MessageSender(
         } catch (_: IOException) {
             return SendResult.Failed(SendFailure.TransportRetryable) { attempt.resubmit() }
         }
+        // Reconcile the durable row with the server-assigned identity.
+        // If this write fails, the row stays SEALED and the next recovery
+        // replays the identical request (server answers 200) and retries
+        // the mark — so still report the server truthful outcome now.
+        try {
+            dao().markAccepted(
+                messageId = attempt.localMessageId,
+                serverMessageId = accepted.messageId,
+                conversationId = accepted.conversationId,
+                sequenceNumber = accepted.sequenceNumber,
+                serverTimestamp = accepted.serverTimestamp,
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            // Deliberately fall through to Sent: the server accepted, and
+            // the SEALED row drives convergence on the next recovery.
+        }
         return SendResult.Sent(
             entry = attempt.entry,
             messageId = accepted.messageId,
+            localMessageId = attempt.localMessageId,
             conversationId = accepted.conversationId,
             sequenceNumber = accepted.sequenceNumber,
             envelopeType = attempt.envelope.envelopeType,

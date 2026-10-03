@@ -5,8 +5,10 @@ import androidx.test.core.app.ApplicationProvider
 import com.samvaad.android.crypto.AndroidCryptoVault
 import com.samvaad.android.crypto.AndroidSignalAdapter
 import com.samvaad.android.crypto.CryptoRecordKind
+import com.samvaad.android.crypto.MessageContentSealer
 import com.samvaad.android.crypto.SpikeCryptoMaterial
 import com.samvaad.android.crypto.WrappingKeyProvider
+import com.samvaad.android.db.MessageDatabase
 import com.samvaad.android.enroll.AdoptedDevice
 import com.samvaad.android.enroll.ClaimedDeviceBundle
 import com.samvaad.android.enroll.ClaimedOneTimePrekey
@@ -25,6 +27,7 @@ import com.samvaad.android.session.FileSessionMetadataStore
 import com.samvaad.android.session.MessageSender
 import com.samvaad.android.session.SendFailure
 import com.samvaad.android.session.SendResult
+import com.samvaad.android.session.SessionDeviceLocks
 import com.samvaad.android.session.SessionEstablisher
 import java.io.File
 import java.util.UUID
@@ -34,12 +37,14 @@ import javax.crypto.SecretKey
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
+import org.junit.After
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -135,6 +140,30 @@ class MessageSenderTest {
             serverAddress: String,
             messageIds: List<UUID>,
         ): Int = throw AssertionError("no inbox in this slice")
+
+        override suspend fun fetchHistory(
+            session: AuthSession,
+            serverAddress: String,
+            conversationId: String,
+            afterSequence: Long,
+            limit: Int,
+        ): List<com.samvaad.android.enroll.HistoryItem> =
+            throw AssertionError("no history in this slice")
+
+        override suspend fun getSyncCursor(
+            session: AuthSession,
+            serverAddress: String,
+            conversationId: String,
+        ): com.samvaad.android.enroll.SyncCursor =
+            throw AssertionError("no history in this slice")
+
+        override suspend fun advanceSyncCursor(
+            session: AuthSession,
+            serverAddress: String,
+            conversationId: String,
+            throughSequence: Long,
+        ): com.samvaad.android.enroll.SyncCursor =
+            throw AssertionError("no history in this slice")
     }
 
     private data class RemoteFixture(
@@ -178,6 +207,8 @@ class MessageSenderTest {
     private lateinit var sessionVault: AndroidCryptoVault
     private lateinit var localMeta: FileDeviceMetadataStore
     private lateinit var sessionMeta: FileSessionMetadataStore
+    private lateinit var db: MessageDatabase
+    private lateinit var sealer: MessageContentSealer
 
     private val session = AuthSession(
         identifier = "alice",
@@ -187,13 +218,19 @@ class MessageSenderTest {
     )
     private val server = "https://example.test:8080"
 
-    private fun sender() = MessageSender(
+    private fun sender(
+        db: MessageDatabase = this.db,
+        locks: SessionDeviceLocks = SessionDeviceLocks(),
+    ) = MessageSender(
         api = api,
         localMetadata = localMeta,
         sessions = sessionMeta,
         adapter = adapter,
         identityVault = identityVault,
         sessionVault = sessionVault,
+        deviceLocks = locks,
+        db = db,
+        contentSealer = sealer,
     )
 
     private fun successResult(createdNew: Boolean = true) = SubmitMessageResult(
@@ -211,6 +248,7 @@ class MessageSenderTest {
         File(context.noBackupFilesDir, AndroidCryptoVault.STORE_SUBDIR).deleteRecursively()
         File(context.noBackupFilesDir, "device-metadata").deleteRecursively()
         File(context.noBackupFilesDir, FileSessionMetadataStore.SUBDIR).deleteRecursively()
+        File(context.noBackupFilesDir, MessageDatabase.SUBDIR).deleteRecursively()
         api = FakeApi()
         keys = EphemeralKeys()
         adapter = AndroidSignalAdapter()
@@ -218,8 +256,19 @@ class MessageSenderTest {
         sessionVault = AndroidCryptoVault(context, keys, FileSessionMetadataStore.SUBDIR)
         localMeta = FileDeviceMetadataStore(context)
         sessionMeta = FileSessionMetadataStore(context)
+        db = androidx.room.Room.inMemoryDatabaseBuilder(context, MessageDatabase::class.java)
+            .allowMainThreadQueries()
+            .build()
+        sealer = MessageContentSealer(keys)
         api.submitHandler = { _, _ -> successResult() }
     }
+
+    @After
+    fun tearDown() {
+        db.close()
+    }
+
+    private fun dao() = db.messageDao()
 
     private fun sealLocalDevice(): AdoptedDevice {
         val identity = adapter.generateIdentity()
@@ -593,5 +642,348 @@ class MessageSenderTest {
         val result = runBlocking { sender().send(session, server, "bob", REMOTE_DEVICE_ID, PLAINTEXT) }
         val sent = result as SendResult.Sent
         assertEquals("PREKEY_INIT", sent.envelopeType)
+    }
+
+    // ---- Slice 9 Step 3: durable outbound state machine ----
+
+    private fun fileSender(
+        fileDb: MessageDatabase,
+        fileAdapter: AndroidSignalAdapter = AndroidSignalAdapter(),
+        locks: SessionDeviceLocks = SessionDeviceLocks(),
+    ) = MessageSender(
+        api = api,
+        localMetadata = localMeta,
+        sessions = sessionMeta,
+        adapter = fileAdapter,
+        identityVault = identityVault,
+        sessionVault = sessionVault,
+        deviceLocks = locks,
+        db = fileDb,
+        contentSealer = MessageContentSealer(keys),
+    )
+
+    private fun containsWindow(haystack: ByteArray, needle: ByteArray): Boolean {
+        if (needle.isEmpty() || needle.size > haystack.size) return false
+        outer@ for (i in 0..haystack.size - needle.size) {
+            for (j in needle.indices) {
+                if (haystack[i + j] != needle[j]) continue@outer
+            }
+            return true
+        }
+        return false
+    }
+
+    @Test
+    fun sendHappy_rowTransitionsToSentWithServerIdentity() {
+        sealLocalDevice()
+        establishSession(remoteFixture())
+        val sent = runBlocking { sender().send(session, server, "bob", REMOTE_DEVICE_ID, PLAINTEXT) } as SendResult.Sent
+        val row = runBlocking { dao().byMessageId(sent.localMessageId) }!!
+        assertEquals(com.samvaad.android.db.SendState.SENT, row.sendState)
+        // Server-assigned identity reconciled onto the local row.
+        assertEquals("33333333-3333-3333-3333-333333333333", row.serverMessageId)
+        assertEquals(sent.messageId, row.serverMessageId)
+        assertEquals("44444444-4444-4444-4444-444444444444", row.conversationId)
+        assertEquals(7L, row.sequenceNumber)
+        assertEquals("2026-10-02T10:00:00", row.serverTimestamp)
+        assertEquals(sent.localMessageId, row.messageId)
+    }
+
+    @Test
+    fun sendHappy_storedBytesEqualSubmittedBytes_rowHasNoPlaintext() {
+        sealLocalDevice()
+        establishSession(remoteFixture())
+        val sent = runBlocking { sender().send(session, server, "bob", REMOTE_DEVICE_ID, PLAINTEXT) } as SendResult.Sent
+        val submitted = api.submits.single()
+        val row = runBlocking { dao().byMessageId(sent.localMessageId) }!!
+        // Exact stored requestId/ciphertext equal the submitted ones.
+        assertEquals(submitted.requestId.toString(), row.requestId)
+        assertArrayEquals(
+            java.util.Base64.getDecoder().decode(submitted.envelopes.single().ciphertextBase64),
+            row.ciphertext,
+        )
+        // Sealed plaintext opens; no cleartext anywhere in the row.
+        assertArrayEquals(PLAINTEXT, sealer.open(row.messageId, row.plaintextSealed!!))
+        assertFalse(containsWindow(row.plaintextSealed, PLAINTEXT))
+        assertEquals(com.samvaad.android.db.MessageDirection.OUT, row.direction)
+        assertEquals(LOCAL_DEVICE_ID, row.senderDeviceId)
+        assertEquals(REMOTE_DEVICE_ID, row.recipientDeviceId)
+    }
+
+    @Test
+    fun transportFailureAfterSeal_preservesRow_recoverResubmitsIdentically() {
+        sealLocalDevice()
+        establishSession(remoteFixture())
+        var failFirst = true
+        api.submitHandler = { _, _ ->
+            if (failFirst) {
+                failFirst = false
+                throw EnrollException.Transport()
+            }
+            successResult(createdNew = false)
+        }
+        val first = runBlocking { sender().send(session, server, "bob", REMOTE_DEVICE_ID, PLAINTEXT) }
+        assertTrue((first as SendResult.Failed).kind is SendFailure.TransportRetryable)
+        // Row stays SEALED with original bytes: nothing mutated, nothing lost.
+        val localId = api.submits.single().let {
+            runBlocking { dao().byRequestId(it.requestId.toString()) }!!.messageId
+        }
+        val sealed = runBlocking { dao().byMessageId(localId) }!!
+        assertEquals(com.samvaad.android.db.SendState.SEALED, sealed.sendState)
+        // Recovery resubmits the identical request without re-encryption.
+        val outcomes = runBlocking { sender().recoverUnsent(session, server, "bob", REMOTE_DEVICE_ID) }
+        val resubmitted = outcomes.single() as com.samvaad.android.session.RecoverOutcome.Resubmitted
+        assertEquals(localId, resubmitted.messageId)
+        assertFalse(resubmitted.sent.createdNew)
+        assertEquals(2, api.submits.size)
+        assertEquals(api.submits[0].requestId, api.submits[1].requestId)
+        assertEquals(
+            api.submits[0].envelopes.single().ciphertextBase64,
+            api.submits[1].envelopes.single().ciphertextBase64,
+        )
+        assertEquals(
+            com.samvaad.android.db.SendState.SENT,
+            runBlocking { dao().byMessageId(localId) }!!.sendState,
+        )
+    }
+
+    @Test
+    fun replayResponse_marksSent() {
+        sealLocalDevice()
+        establishSession(remoteFixture())
+        api.submitHandler = { _, _ -> successResult(createdNew = false) }
+        val sent = runBlocking { sender().send(session, server, "bob", REMOTE_DEVICE_ID, PLAINTEXT) } as SendResult.Sent
+        assertFalse(sent.createdNew)
+        assertEquals(
+            com.samvaad.android.db.SendState.SENT,
+            runBlocking { dao().byMessageId(sent.localMessageId) }!!.sendState,
+        )
+    }
+
+    @Test
+    fun conflict_preservesRow_usesFreshIdsNextTime() {
+        sealLocalDevice()
+        establishSession(remoteFixture())
+        api.submitHandler = { _, _ -> throw EnrollException.Conflict() }
+        val result = runBlocking { sender().send(session, server, "bob", REMOTE_DEVICE_ID, PLAINTEXT) }
+        val failed = result as SendResult.Failed
+        assertEquals(SendFailure.Conflict, failed.kind)
+        assertNull(failed.retry)
+        // 409 is terminal for these bytes: row stays SEALED, bytes kept.
+        val row = runBlocking { dao().byRequestId(api.submits.single().requestId.toString()) }!!
+        assertEquals(com.samvaad.android.db.SendState.SEALED, row.sendState)
+        val burnedCiphertext = row.ciphertext!!.copyOf()
+        // A new logical message mints fresh IDs and re-encrypts (ratchet
+        // advanced again) — never silently retries the burned request.
+        api.submitHandler = { _, _ -> successResult() }
+        runBlocking { sender().send(session, server, "bob", REMOTE_DEVICE_ID, PLAINTEXT) }
+        assertEquals(2, api.submits.size)
+        assertFalse(api.submits[0].requestId == api.submits[1].requestId)
+        assertFalse(
+            api.submits[0].envelopes.single().ciphertextBase64 ==
+                api.submits[1].envelopes.single().ciphertextBase64
+        )
+        assertArrayEquals(burnedCiphertext, runBlocking { dao().byMessageId(row.messageId) }!!.ciphertext)
+    }
+
+    @Test
+    fun badRequest_preservesRow_noReencrypt() {
+        sealLocalDevice()
+        establishSession(remoteFixture())
+        api.submitHandler = { _, _ -> throw EnrollException.BadRequest() }
+        val result = runBlocking { sender().send(session, server, "bob", REMOTE_DEVICE_ID, PLAINTEXT) }
+        assertEquals(SendFailure.BadRequest, (result as SendResult.Failed).kind)
+        val row = runBlocking { dao().byRequestId(api.submits.single().requestId.toString()) }!!
+        assertEquals(com.samvaad.android.db.SendState.SEALED, row.sendState)
+    }
+
+    @Test
+    fun pendingSeal_recovery_supersedesWithFreshAttempt() {
+        sealLocalDevice()
+        establishSession(remoteFixture())
+        // Simulate the crash window: a row whose session was never
+        // committed (old IDs/ciphertext must never be submitted).
+        val staleId = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+        val staleRequest = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+        val staleCipher = ByteArray(48) { 0x2A }
+        runBlocking {
+            dao().insertIgnore(
+                com.samvaad.android.db.MessageEntity(
+                    messageId = staleId,
+                    conversationId = "",
+                    sequenceNumber = 0L,
+                    direction = com.samvaad.android.db.MessageDirection.OUT,
+                    senderDeviceId = LOCAL_DEVICE_ID,
+                    recipientDeviceId = REMOTE_DEVICE_ID,
+                    envelopeType = "PREKEY_INIT",
+                    ciphertext = staleCipher,
+                    plaintextSealed = sealer.seal(staleId, PLAINTEXT),
+                    sendState = com.samvaad.android.db.SendState.PENDING_SEAL,
+                    acked = false,
+                    requestId = staleRequest,
+                    serverMessageId = null,
+                    serverTimestamp = "",
+                    createdAt = 1L,
+                )
+            )
+        }
+        api.submitHandler = { _, _ -> successResult() }
+        val outcomes = runBlocking { sender().recoverUnsent(session, server, "bob", REMOTE_DEVICE_ID) }
+        val superseded = outcomes.single() as com.samvaad.android.session.RecoverOutcome.Superseded
+        assertEquals(staleId, superseded.oldMessageId)
+        // Old row discarded, never submitted…
+        assertNull(runBlocking { dao().byMessageId(staleId) })
+        assertTrue(api.submits.none { it.requestId.toString() == staleRequest })
+        assertTrue(api.submits.none {
+            it.envelopes.single().ciphertextBase64 ==
+                java.util.Base64.getEncoder().encodeToString(staleCipher)
+        })
+        // …fresh attempt sent with new IDs through the normal path.
+        val fresh = superseded.fresh as SendResult.Sent
+        assertFalse(fresh.localMessageId == staleId)
+        assertArrayEquals(PLAINTEXT, sealer.open(
+            fresh.localMessageId,
+            runBlocking { dao().byMessageId(fresh.localMessageId) }!!.plaintextSealed!!,
+        ))
+    }
+
+    @Test
+    fun sentRows_ignoredByRecovery_noDuplicateSubmit() {
+        sealLocalDevice()
+        establishSession(remoteFixture())
+        runBlocking { sender().send(session, server, "bob", REMOTE_DEVICE_ID, PLAINTEXT) }
+        val callsBefore = api.submits.size
+        val outcomes = runBlocking { sender().recoverUnsent(session, server, "bob", REMOTE_DEVICE_ID) }
+        assertTrue(outcomes.isEmpty())
+        assertEquals(callsBefore, api.submits.size)
+    }
+
+    @Test
+    fun noPlaintextInDatabaseFiles() {
+        sealLocalDevice()
+        establishSession(remoteFixture())
+        runBlocking { sender().send(session, server, "bob", REMOTE_DEVICE_ID, PLAINTEXT) }
+        db.close()
+        // Reopen to force WAL checkpoint, then scan every message-state
+        // file: sealed or opaque bytes only, never cleartext.
+        val reopened = MessageDatabase.open(context)
+        try {
+            runBlocking { reopened.messageDao().byMessageId("absent") }
+        } finally {
+            reopened.close()
+        }
+        val dir = File(File(context.noBackupFilesDir, MessageDatabase.SUBDIR), "")
+        val files = dir.listFiles()?.toList().orEmpty()
+        assertTrue(files.isNotEmpty())
+        files.forEach { file ->
+            if (file.isFile) {
+                assertFalse(
+                    "cleartext in ${file.name}",
+                    containsWindow(file.readBytes(), PLAINTEXT),
+                )
+            }
+        }
+    }
+
+    @Test
+    fun restartSealedRow_resubmitsIdentically() {
+        sealLocalDevice()
+        establishSession(remoteFixture())
+        val fileDb = MessageDatabase.open(context)
+        try {
+            var failFirst = true
+            api.submitHandler = { _, _ ->
+                if (failFirst) {
+                    failFirst = false
+                    throw EnrollException.Transport()
+                }
+                successResult(createdNew = false)
+            }
+            val first = runBlocking {
+                fileSender(fileDb).send(session, server, "bob", REMOTE_DEVICE_ID, PLAINTEXT)
+            }
+            assertTrue((first as SendResult.Failed).kind is SendFailure.TransportRetryable)
+            val original = api.submits.single()
+            fileDb.close()
+            // Simulated restart: new adapter, new sender, same vaults/keys/files.
+            val freshAdapter = AndroidSignalAdapter()
+            val reopened = MessageDatabase.open(context)
+            try {
+                val recovered = MessageSender(
+                    api = api,
+                    localMetadata = localMeta,
+                    sessions = sessionMeta,
+                    adapter = freshAdapter,
+                    identityVault = identityVault,
+                    sessionVault = sessionVault,
+                    deviceLocks = SessionDeviceLocks(),
+                    db = reopened,
+                    contentSealer = MessageContentSealer(keys),
+                )
+                val outcomes = runBlocking {
+                    recovered.recoverUnsent(session, server, "bob", REMOTE_DEVICE_ID)
+                }
+                val resubmitted = outcomes.single() as com.samvaad.android.session.RecoverOutcome.Resubmitted
+                assertFalse(resubmitted.sent.createdNew)
+                assertEquals(2, api.submits.size)
+                assertEquals(original.requestId, api.submits[1].requestId)
+                assertEquals(
+                    original.envelopes.single().ciphertextBase64,
+                    api.submits[1].envelopes.single().ciphertextBase64,
+                )
+            } finally {
+                reopened.close()
+            }
+        } finally {
+            if (fileDb.isOpen) fileDb.close()
+        }
+    }
+
+    @Test
+    fun restartPendingSeal_supersedesFresh() {
+        sealLocalDevice()
+        establishSession(remoteFixture())
+        val fileDb = MessageDatabase.open(context)
+        try {
+            val staleId = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+            runBlocking {
+                fileDb.messageDao().insertIgnore(
+                    com.samvaad.android.db.MessageEntity(
+                        messageId = staleId,
+                        conversationId = "",
+                        sequenceNumber = 0L,
+                        direction = com.samvaad.android.db.MessageDirection.OUT,
+                        senderDeviceId = LOCAL_DEVICE_ID,
+                        recipientDeviceId = REMOTE_DEVICE_ID,
+                        envelopeType = "PREKEY_INIT",
+                        ciphertext = ByteArray(32) { 0x2A },
+                        plaintextSealed = MessageContentSealer(keys).seal(staleId, PLAINTEXT),
+                        sendState = com.samvaad.android.db.SendState.PENDING_SEAL,
+                        acked = false,
+                        requestId = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+                        serverMessageId = null,
+                        serverTimestamp = "",
+                        createdAt = 1L,
+                    )
+                )
+            }
+            fileDb.close()
+            api.submitHandler = { _, _ -> successResult() }
+            val reopened = MessageDatabase.open(context)
+            try {
+                val recovered = fileSender(reopened)
+                val outcomes = runBlocking {
+                    recovered.recoverUnsent(session, server, "bob", REMOTE_DEVICE_ID)
+                }
+                val superseded = outcomes.single() as com.samvaad.android.session.RecoverOutcome.Superseded
+                assertEquals(staleId, superseded.oldMessageId)
+                assertTrue(superseded.fresh is SendResult.Sent)
+                assertNull(runBlocking { reopened.messageDao().byMessageId(staleId) })
+            } finally {
+                reopened.close()
+            }
+        } finally {
+            if (fileDb.isOpen) fileDb.close()
+        }
     }
 }
