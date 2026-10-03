@@ -48,12 +48,28 @@ Android currently consumes existing server contracts for:
 - recipient OTPK claiming;
 - ciphertext message submission;
 - device-scoped mailbox fetch;
-- per-message mailbox acknowledgment.
+- per-message mailbox acknowledgment;
+- conversation history reads;
+- per-device/per-conversation synchronization-cursor reads and advancement.
 
-For mailbox consumption, Android uses the existing `GET /api/e2ee/mailbox?limit=N` and `POST /api/e2ee/mailbox/ack` contracts. These are existing server endpoints; Android introduces no server API for Slice 8. Mailbox fetch is scoped to the authenticated session's bound device, and ACK is scoped/idempotent per device. Android persists the post-decrypt Signal SessionRecord before issuing an ACK.
+For mailbox consumption, Android uses the existing `GET /api/e2ee/mailbox?limit=N` and `POST /api/e2ee/mailbox/ack` contracts. These are existing server endpoints; Android introduces no server API for Slice 8 or Slice 9.
 
-Android has not yet integrated server history reads, synchronization cursors, or realtime delivery as client features.
+For durable history reconciliation, Android uses the existing:
 
-The server remains cryptographically blind. The current server-side durable ciphertext history is a transition-state mechanism, while the target architecture moves long-term history authority to the Android Primary.
+- `GET /api/e2ee/conversations/{conversationId}/messages?afterSequence=&limit=`
+- `GET /api/e2ee/sync?conversationId=`
+- `PUT /api/e2ee/sync`
 
-No Android-specific server endpoints are authorized by this document.
+The server validates conversation/device ownership and cursor bounds. Android treats history as reconciliation/replay input and advances the cursor only through locally contiguous durable message state.
+
+The server remains cryptographically blind. Its durable ciphertext history remains a transition-state mechanism while the target architecture moves long-term history authority to the Android Primary.
+
+## No server changes in Slice 9
+
+Slice 9 required **no server implementation changes**.
+
+The Android checkpoint `27edc0e1dfaa51b839e7d9aee06a3cc0f46825c8` consumed the existing server history/cursor contracts exactly as exposed by the public baseline above.
+
+No Android-specific endpoint was introduced. No server retention/eviction policy, Primary succession/liveness behavior, Primary-to-Companion history-sync protocol, push contract, or backup protocol was added.
+
+No Android client should infer future server behavior from this checkpoint.
