@@ -1,6 +1,6 @@
 # Architecture Current State
 
-Date: 2026-10-02.
+Date: 2026-10-03.
 
 This document describes the Android repository as it exists now. It does not describe future architecture as implemented behavior.
 
@@ -26,26 +26,113 @@ This document describes the Android repository as it exists now. It does not des
 - Outbound Signal session establishment (ADR 0007): recipient device discovery and OTPK claim produce a validated, pinned `SignalProtocolAddress(remoteUsername, remoteSignalDeviceId)` session. The durable `SessionRecord` is sealed before remote session metadata is recorded, and valid sessions are reused without rediscovery/claim.
 - Slice 7 outbound encrypted message submission: `MessageSender` loads an existing established session, encrypts with real libsignal, persists the post-encrypt `SessionRecord` before HTTP submission, submits the existing server ciphertext envelope, and retries an ambiguous transport outcome with the same in-memory request bytes/request ID rather than re-encrypting.
 - Slice 8 inbound mailbox consumption and Signal decryption: `InboxProcessor` fetches a small device-scoped mailbox batch, resolves each `senderDeviceId` against an existing `SignalSessionEntry`, selects `PREKEY_INIT` vs `RATCHET` from the server-supplied envelope type, decrypts through real libsignal 0.86.5, seals the post-decrypt `SessionRecord`, and only then acknowledges that message ID.
-- Inbound duplicate processing is explicit: a libsignal `DuplicateMessageException` is treated as proof that the message was already processed, so it is acknowledged without delivering plaintext again. Other decrypt/persistence failures remain unacknowledged for redelivery.
+- Inbound duplicate processing is explicit: a libsignal `DuplicateMessageException` is treated as proof that the message was already processed when the durable local message row exists, so it is acknowledged without delivering plaintext again. Other decrypt/persistence failures remain unacknowledged for redelivery.
 - Outbound and inbound session mutation share the same per-remote-device `SessionDeviceLocks` holder so one `SessionRecord` cannot be mutated concurrently in opposite directions.
-- Inbound identity remains pinned to the existing remote session metadata; changed/mismatched identity fails closed. Unknown `senderDeviceId` entries are skipped without discovery, OTPK claim, or session creation.
-- Slice 8 keeps plaintext memory-only and does not introduce message/conversation persistence, history, synchronization, realtime, background polling, or UI.
+
+### Slice 9 — Durable message state and reconciliation
+
+Slice 9 adds the first durable local message-state boundary.
+
+#### Room message-state store
+
+Room is used for relational message/conversation facts:
+
+- `ConversationEntity` tracks conversation identity, last-seen sequence, and locally asserted cursor-through sequence.
+- `MessageEntity` tracks local/server identifiers, conversation/sequence, direction, device IDs, envelope type, ciphertext, sealed plaintext, send state, ACK state, request ID, server timestamp, and creation time.
+- `MessageDao` provides idempotent inserts, state transitions, pending-work queries, history pages, message deduplication, and highest-contiguous sequence calculation.
+- `MessageDatabase` is stored under `getNoBackupFilesDir()/message-state/messages.db`.
+- Schema v1 is a fresh-install boundary; no destructive migration fallback was introduced.
+
+Room stores message metadata and opaque/sealed BLOBs. It does not store private keys or Signal `SessionRecord` material.
+
+#### Message content protection
+
+`MessageContentSealer` reuses the existing Keystore wrapping-key infrastructure rather than introducing a second key hierarchy.
+
+The sealed-message format uses the existing record-envelope mechanism with a dedicated message-content kind (`0x20`) and a deterministic per-message handle derived from the local message ID. Plaintext is sealed before durable insertion; Room never stores the plaintext bytes directly.
+
+Structural Room metadata is not itself an encrypted database. The security boundary is specifically the sealed message-content BLOB plus the existing Keystore-held wrapping key.
+
+#### Outbound state machine
+
+Durable outbound submission follows:
+
+`PENDING_SEAL → SEALED → SENT`
+
+The logical message gets distinct local and server identifiers. The server-assigned message ID, sequence number, and server timestamp are recorded after acceptance.
+
+A recoverable `SEALED` row re-submits the exact stored ciphertext/request ID. A stranded `PENDING_SEAL` row is opened from sealed plaintext, removed, and retried as a fresh logical submission rather than reusing an uncertain pre-accept request identity.
+
+#### Inbound state machine
+
+Durable inbound processing follows:
+
+`DECRYPTED → SEALED → ACKED`
+
+The plaintext is sealed before the message row is considered durable. The mutated Signal `SessionRecord` is also sealed before the mailbox entry is acknowledged.
+
+A libsignal `DuplicateMessageException` is accepted as already-processed only when durable local message state proves the message exists. ACK then converges delivery without another plaintext delivery. Other decrypt/seal/persistence failures remain unacknowledged.
+
+#### History and synchronization cursors
+
+Android now consumes the existing server history and synchronization-cursor contracts:
+
+- `GET /api/e2ee/conversations/{conversationId}/messages?afterSequence=&limit=`
+- `GET /api/e2ee/sync?conversationId=`
+- `PUT /api/e2ee/sync`
+
+Server history is a reconciliation/replay source. Durable local message state remains the local source of truth for whether content has been successfully processed and stored.
+
+Cursor advancement is **contiguous-only**. If local durable sequences are `1,2,3,5`, the highest contiguous sequence is `3`; the cursor cannot advance through the gap at `4`. Cursor writes are also bounded by the server's reported conversation sequence.
+
+#### Reconciliation sweep
+
+`ReconciliationSweep` is a bounded, deterministic, idempotent headless operation:
+
+1. recover outbound rows;
+2. reconcile unacknowledged mailbox work and mailbox redelivery;
+3. reconcile history for known conversations;
+4. advance synchronization cursors only through locally contiguous durable state.
+
+The sweep uses bounded mailbox/history limits and a bounded history-page count. It has no scheduler, background worker, push trigger, or realtime dependency.
+
+The same `SessionDeviceLocks` holder must be shared by outbound, inbound, and reconciliation paths so SessionRecord mutation remains serialized per remote device.
+
+#### Cross-store crash model
+
+Room and Android Keystore are separate durability systems and are not treated as a distributed transaction.
+
+Instead, Slice 9 uses explicit durable state transitions and idempotent re-entry:
+
+- outbound `SEALED` is safe to replay exactly;
+- outbound `PENDING_SEAL` is recoverable from sealed plaintext;
+- inbound durable rows absorb mailbox redelivery;
+- ACK failure leaves the message eligible for duplicate convergence;
+- cursor failure leaves the message durable/ACKED and allows later cursor retry.
+
+No two-phase commit or hidden atomicity assumption is used.
+
+### History ownership boundary
+
+The server's ciphertext history remains a transition-state delivery/replay mechanism. Server ADR 0025 continues to define Android Primary ownership of durable conversation history and the future Primary-to-Companion synchronization direction.
+
+Slice 9 implements **local durable message state and reconciliation**, not the final Companion history protocol, server retention policy, backup/restore, or a user-facing history experience.
 
 ## Not implemented
 
-- User-facing chat UI.
-- Local conversation/message persistence or durable message store.
-- History reads and synchronization-cursor reconciliation.
+- User-facing chat UI and conversation/history presentation.
 - WebSocket/STOMP realtime integration.
 - Background mailbox polling or push notification handling.
 - Automatic/background access-token refresh beyond launch-time restoration; no generic 401 middleware.
 - Enrollment beyond first-device bootstrap: Companion approval UI, recovery enrollment/entry/rotation, and revocation UX.
 - OTPK replenishment and Kyber rotation.
 - Identity verification/fingerprint UI and a user-facing trust-state machine.
-- Primary-owned durable conversation history.
 - Primary-to-Companion history synchronization.
 - Wrapping-key rotation/lifecycle policy.
 - Encrypted backup/restore.
+- Server ciphertext retention/eviction implementation.
+- Final Primary/Companion liveness policy.
+- Final history-sync wire protocol.
 
 ## Server architecture relevant to Android
 
@@ -65,40 +152,18 @@ The server has implemented:
 - per-conversation synchronization cursors;
 - best-effort device-level realtime delivery with durable mailbox fallback.
 
-The server remains cryptographically blind to message content.
-
-## Transition state vs target architecture
-
-The server's per-device durable ciphertext history is currently a **transition-state implementation**. It is not yet the final long-term history architecture.
-
-Target direction established by server ADR 0025:
-
-- Android is the Primary product device.
-- Primary owns durable conversation history.
-- Web is a future Companion.
-- The server becomes a bounded delivery/replay layer rather than the user's permanent chat archive.
-- Companion history is obtained through an E2EE Primary-to-Companion synchronization mechanism.
-
-Not yet locked or implemented:
-
-- exact server retention/eviction count and semantics;
-- final Primary/Companion liveness/expiry policy;
-- Primary-to-Companion history-sync wire protocol;
-- encrypted backup/restore design.
-
-Therefore Android must not implement or assume any of those details until explicitly defined.
+The server remains cryptographically blind.
 
 ## Android architecture decisions not yet made
 
 No Android-specific production architecture has been selected yet for:
 
 - networking library;
-- persistence/database technology;
 - navigation;
 - ViewModel/state-management structure;
 - dependency injection.
 
-These decisions should be made when their corresponding implementation slices require them.
+Room is now selected for the Slice 9 durable message-state boundary. This does not establish a broader application persistence architecture beyond the message-state needs implemented here.
 
 ## Parked / future clients
 
@@ -108,8 +173,9 @@ These decisions should be made when their corresponding implementation slices re
 
 ## What this is not
 
-- not a TUI architecture port;
-- not a claim that the Android app has a user-facing chat experience;
-- not a history-sync implementation;
-- not a server-side implementation;
-- not a claim that Android already owns durable chat history.
+- not a user-facing chat experience;
+- not a server-side history implementation;
+- not the final Primary-to-Companion history-sync protocol;
+- not a background/realtime delivery system;
+- not an encrypted backup/restore implementation;
+- not a claim that Room and Keystore form one atomic transaction.
