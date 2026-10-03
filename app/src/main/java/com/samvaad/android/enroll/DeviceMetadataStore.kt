@@ -43,14 +43,21 @@ data class AdoptedDevice(
     val registrationId: Int,
     val identityPublicKeyB64: String,
     val signedPrekeyId: Int,
-    val kyberPrekeyId: Int,
+    val kyberPrekeyId: Int?,
     val otpkHighWaterMark: Int,
     val roleHint: String,
     val statusHint: String,
-    /** Vault handle UUIDs for future crypto operations. Non-secret. */
-    val identityHandleId: String,
-    val signedHandleId: String,
-    val kyberHandleId: String,
+    /**
+     * Vault handle UUIDs for future crypto operations. Non-secret.
+     *
+     * Null when this installation holds no private material for the
+     * device — exactly the bind-existing-device case
+     * (`POST /devices/{id}/bind` accepts no key material). Null handles
+     * must never be manufactured; crypto paths fail closed without them.
+     */
+    val identityHandleId: String?,
+    val signedHandleId: String?,
+    val kyberHandleId: String?,
     val otpkHandleIds: List<String>,
     /**
      * Whether the first-bootstrap codes were displayed AND acknowledged.
@@ -59,7 +66,14 @@ data class AdoptedDevice(
      * rotation is future work).
      */
     val codesAcknowledged: Boolean,
-)
+) {
+    /** True only when every private-material handle is present locally. */
+    val hasLocalKeys: Boolean
+        get() = identityHandleId != null &&
+            signedHandleId != null &&
+            kyberHandleId != null &&
+            otpkHandleIds.isNotEmpty()
+}
 
 interface DeviceMetadataStore {
     fun readAttempt(): EnrollmentAttempt?
@@ -175,13 +189,13 @@ class FileDeviceMetadataStore(context: Context) : DeviceMetadataStore {
         .put("registrationId", d.registrationId)
         .put("identityPublicKeyB64", d.identityPublicKeyB64)
         .put("signedPrekeyId", d.signedPrekeyId)
-        .put("kyberPrekeyId", d.kyberPrekeyId)
+        .put("kyberPrekeyId", d.kyberPrekeyId ?: JSONObject.NULL)
         .put("otpkHighWaterMark", d.otpkHighWaterMark)
         .put("roleHint", d.roleHint)
         .put("statusHint", d.statusHint)
-        .put("identityHandleId", d.identityHandleId)
-        .put("signedHandleId", d.signedHandleId)
-        .put("kyberHandleId", d.kyberHandleId)
+        .put("identityHandleId", d.identityHandleId ?: JSONObject.NULL)
+        .put("signedHandleId", d.signedHandleId ?: JSONObject.NULL)
+        .put("kyberHandleId", d.kyberHandleId ?: JSONObject.NULL)
         .put("otpkHandleIds", d.otpkHandleIds.joinToString(","))
         .put("codesAcknowledged", d.codesAcknowledged)
 
@@ -194,13 +208,30 @@ class FileDeviceMetadataStore(context: Context) : DeviceMetadataStore {
                 registrationId = json.getInt("registrationId"),
                 identityPublicKeyB64 = json.getString("identityPublicKeyB64"),
                 signedPrekeyId = json.getInt("signedPrekeyId"),
-                kyberPrekeyId = json.getInt("kyberPrekeyId"),
+                kyberPrekeyId = if (json.isNull("kyberPrekeyId")) {
+                    null
+                } else {
+                    json.getInt("kyberPrekeyId")
+                },
                 otpkHighWaterMark = json.getInt("otpkHighWaterMark"),
                 roleHint = json.getString("roleHint"),
                 statusHint = json.getString("statusHint"),
-                identityHandleId = json.getString("identityHandleId"),
-                signedHandleId = json.getString("signedHandleId"),
-                kyberHandleId = json.getString("kyberHandleId"),
+                // isNull covers both absent keys and explicit JSON nulls.
+                identityHandleId = if (json.isNull("identityHandleId")) {
+                    null
+                } else {
+                    json.getString("identityHandleId")
+                },
+                signedHandleId = if (json.isNull("signedHandleId")) {
+                    null
+                } else {
+                    json.getString("signedHandleId")
+                },
+                kyberHandleId = if (json.isNull("kyberHandleId")) {
+                    null
+                } else {
+                    json.getString("kyberHandleId")
+                },
                 otpkHandleIds = json.getString("otpkHandleIds")
                     .split(",").filter { it.isNotEmpty() },
                 codesAcknowledged = json.optBoolean("codesAcknowledged", false),

@@ -272,7 +272,11 @@ class InboxProcessor(
             return DecryptOutcome.Unavailable("session-metadata-corrupt")
         }
         val localIdentity = try {
-            restoreLocal(adopted.identityHandleId, CryptoRecordKind.IDENTITY)
+            // Bind-adopted records carry no handles: fail closed, never
+            // decrypt without local private material.
+            val identityHandleId = adopted.identityHandleId
+                ?: return DecryptOutcome.Unavailable("crypto-unavailable")
+            restoreLocal(identityHandleId, CryptoRecordKind.IDENTITY)
         } catch (_: VaultException) {
             return DecryptOutcome.Unavailable("crypto-unavailable")
         } catch (_: CryptoRecoveryException) {
@@ -282,10 +286,15 @@ class InboxProcessor(
         }
         // Eagerly restore the adopted private records; the OTK index is
         // derived from the records themselves, so no ID ordering is
-        // assumed and the metadata schema is untouched.
-        val signed = restoreSigned(adopted.signedHandleId)
+        // assumed and the metadata schema is untouched. Absent handles
+        // (bind-adopted) fail closed here.
+        val signedHandleId = adopted.signedHandleId
             ?: return DecryptOutcome.Unavailable("crypto-unavailable")
-        val kyber = restoreKyber(adopted.kyberHandleId)
+        val signed = restoreSigned(signedHandleId)
+            ?: return DecryptOutcome.Unavailable("crypto-unavailable")
+        val kyberHandleId = adopted.kyberHandleId
+            ?: return DecryptOutcome.Unavailable("crypto-unavailable")
+        val kyber = restoreKyber(kyberHandleId)
             ?: return DecryptOutcome.Unavailable("crypto-unavailable")
         val otpks = adopted.otpkHandleIds.mapNotNull { restoreOtpk(it) }
         val sealed = try {

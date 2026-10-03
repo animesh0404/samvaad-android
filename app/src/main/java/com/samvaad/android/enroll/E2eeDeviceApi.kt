@@ -83,6 +83,64 @@ interface E2eeDeviceApi {
     suspend fun listDevices(session: AuthSession, serverAddress: String): DeviceList
 
     /**
+     * POST /api/e2ee/devices/{deviceId}/approve (empty body). Approves an
+     * owned PENDING device. The caller session must be bound to an owned
+     * ACTIVE device — the pending device's own session can never approve
+     * itself. Returns the approved row (200; idempotent when already
+     * ACTIVE).
+     *
+     * @throws EnrollException.NotFound unknown device id.
+     * @throws EnrollException.Conflict target REVOKED (409).
+     * @throws EnrollException.ServerRejected approval not permitted (403).
+     */
+    @Throws(IOException::class)
+    suspend fun approveDevice(
+        session: AuthSession,
+        serverAddress: String,
+        deviceId: String,
+    ): DeviceRecord
+
+    /**
+     * POST /api/e2ee/devices/{deviceId}/bind with `{"recoveryCode": ...}`.
+     * Binds the current unbound session to an existing owned ACTIVE
+     * device. Creates no device, accepts no key material, preserves the
+     * existing identity/signalDeviceId. Returns the bound row (200).
+     *
+     * The code is single-use: callers must never blind-retry after an
+     * uncertain transport outcome — reconcile through [listDevices] first.
+     * The code is passed transiently and never stored here.
+     *
+     * @throws EnrollException.Conflict session already bound, or target
+     * inactive (both 409 — converge through [listDevices]).
+     * @throws EnrollException.ServerRejected wrong/used code (403).
+     */
+    @Throws(IOException::class)
+    suspend fun bindDevice(
+        session: AuthSession,
+        serverAddress: String,
+        deviceId: String,
+        recoveryCode: String,
+    ): DeviceRecord
+
+    /**
+     * POST /api/e2ee/recovery/enroll with
+     * `{"recoveryCode": ..., "device": {...}}`. Creates a NEW ACTIVE
+     * device from fresh public material, consuming one recovery code
+     * atomically with creation. Returns the created row (201); the caller
+     * still uploads the 100-OTPK batch afterwards. Never resurrects a
+     * revoked row.
+     *
+     * Same single-use/reconcile-first rules as [bindDevice].
+     */
+    @Throws(IOException::class)
+    suspend fun recoverEnroll(
+        session: AuthSession,
+        serverAddress: String,
+        recoveryCode: String,
+        request: EnrollRequest,
+    ): DeviceRecord
+
+    /**
      * GET /api/e2ee/users/{username}/devices. Friendship-gated recipient
      * directory (ACTIVE devices only, possibly empty). Claim does not
      * require session→device binding. @throws EnrollException with

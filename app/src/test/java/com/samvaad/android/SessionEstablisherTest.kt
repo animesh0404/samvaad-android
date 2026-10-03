@@ -95,6 +95,29 @@ class SessionEstablisherTest {
             serverAddress: String,
         ): DeviceList = throw AssertionError("no owner list in this slice")
 
+        override suspend fun approveDevice(
+            session: AuthSession,
+            serverAddress: String,
+            deviceId: String,
+        ): com.samvaad.android.enroll.DeviceRecord =
+            throw AssertionError("no approval in this slice")
+
+        override suspend fun bindDevice(
+            session: AuthSession,
+            serverAddress: String,
+            deviceId: String,
+            recoveryCode: String,
+        ): com.samvaad.android.enroll.DeviceRecord =
+            throw AssertionError("no recovery in this slice")
+
+        override suspend fun recoverEnroll(
+            session: AuthSession,
+            serverAddress: String,
+            recoveryCode: String,
+            request: com.samvaad.android.enroll.EnrollRequest,
+        ): com.samvaad.android.enroll.DeviceRecord =
+            throw AssertionError("no recovery in this slice")
+
         override suspend fun listRecipientDevices(
             session: AuthSession,
             serverAddress: String,
@@ -362,7 +385,7 @@ class SessionEstablisherTest {
         assertEquals(EstablishedVia.SIGNED_FALLBACK, entry.establishedVia)
         // The fallback session still encrypts (probe via the real cipher).
         val adopted = localMeta.readAdopted()!!
-        val local = restoreLocalForProbe(adopted.identityHandleId)
+        val local = restoreLocalForProbe(requireNotNull(adopted.identityHandleId))
         val wire = adapter.probeEncrypt(
             local, adopted.registrationId,
             sessionVault.unseal(SessionEstablisher.sessionHandleFor(deviceId), CryptoRecordKind.SESSION),

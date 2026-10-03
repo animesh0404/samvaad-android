@@ -368,6 +368,20 @@ class SessionRefresherTest {
                 ),
             )
 
+            override suspend fun approveDevice(
+                session: AuthSession, serverAddress: String, deviceId: String,
+            ): DeviceRecord = throw AssertionError("no approval in this slice")
+
+            override suspend fun bindDevice(
+                session: AuthSession, serverAddress: String, deviceId: String,
+                recoveryCode: String,
+            ): DeviceRecord = throw AssertionError("no recovery in this slice")
+
+            override suspend fun recoverEnroll(
+                session: AuthSession, serverAddress: String, recoveryCode: String,
+                request: EnrollRequest,
+            ): DeviceRecord = throw AssertionError("no recovery in this slice")
+
             override suspend fun listRecipientDevices(
                 session: AuthSession, serverAddress: String, username: String,
             ): List<com.samvaad.android.enroll.RecipientDeviceRecord> =

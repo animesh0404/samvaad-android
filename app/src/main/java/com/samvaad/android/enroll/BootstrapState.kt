@@ -25,6 +25,14 @@ sealed interface BootstrapFinal {
     /** Server returned a non-ACTIVE device: stop, no OTPK upload, no approval UI. */
     data class PendingApproval(val deviceLabel: String) : BootstrapFinal
 
+    /**
+     * The adopted pending device is gone server-side (REVOKED, expired, or
+     * absent). Distinct from [ReconciliationRequired]: the lineage is dead,
+     * so the UI offers a fresh enrollment instead of a retry. Never reuse
+     * the dead device row.
+     */
+    data class Denied(val deviceLabel: String) : BootstrapFinal
+
     /** Server demands recovery flow (deferred slice). */
     data object RecoveryRequired : BootstrapFinal
 

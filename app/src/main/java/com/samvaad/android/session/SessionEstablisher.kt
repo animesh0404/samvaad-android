@@ -102,8 +102,12 @@ class SessionEstablisher(
     ): SessionEstablishResult {
         val adopted = localMetadata.readAdopted()
             ?: return SessionEstablishResult.CryptoUnavailable
+        // Bind-adopted records carry no handles: fail closed, never proceed
+        // to crypto without local private material.
+        val identityHandleId = adopted.identityHandleId
+            ?: return SessionEstablishResult.CryptoUnavailable
         val localIdentity = try {
-            restoreLocalIdentity(adopted.identityHandleId)
+            restoreLocalIdentity(identityHandleId)
         } catch (_: VaultException.WrappingKeyMissing) {
             return SessionEstablishResult.CryptoUnavailable
         } catch (_: VaultException) {
@@ -222,7 +226,7 @@ class SessionEstablisher(
             remoteIdentityPublicKeyB64 =
                 SpikeCryptoMaterial.encodeBase64(established.remoteIdentityBytes),
             establishedVia = establishedVia,
-            localIdentityHandleId = adopted.identityHandleId,
+            localIdentityHandleId = identityHandleId,
             createdAt = now,
             updatedAt = now,
         )

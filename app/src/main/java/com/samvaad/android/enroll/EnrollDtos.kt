@@ -35,6 +35,12 @@ data class DeviceRecord(
     val deviceRole: String,
     val status: String,
     val availablePrekeys: Long,
+    /**
+     * Server kyber prekey id when the DTO carries it (bind/recovery
+     * responses do; older shapes may omit it). Retained only so a
+     * bind-adopted record stays faithful to server truth.
+     */
+    val kyberPrekeyId: Int? = null,
 )
 
 /** Successful enrollment outcome. [recoveryCodes] present only on first bootstrap. */

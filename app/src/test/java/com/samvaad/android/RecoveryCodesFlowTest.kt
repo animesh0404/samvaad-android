@@ -88,6 +88,29 @@ class RecoveryCodesFlowTest {
             serverAddress: String,
         ): DeviceList = DeviceList("ENROLLED_ACTIVE", emptyList())
 
+        override suspend fun approveDevice(
+            session: AuthSession,
+            serverAddress: String,
+            deviceId: String,
+        ): com.samvaad.android.enroll.DeviceRecord =
+            throw AssertionError("no approval in this slice")
+
+        override suspend fun bindDevice(
+            session: AuthSession,
+            serverAddress: String,
+            deviceId: String,
+            recoveryCode: String,
+        ): com.samvaad.android.enroll.DeviceRecord =
+            throw AssertionError("no recovery in this slice")
+
+        override suspend fun recoverEnroll(
+            session: AuthSession,
+            serverAddress: String,
+            recoveryCode: String,
+            request: com.samvaad.android.enroll.EnrollRequest,
+        ): com.samvaad.android.enroll.DeviceRecord =
+            throw AssertionError("no recovery in this slice")
+
         override suspend fun listRecipientDevices(
             session: AuthSession,
             serverAddress: String,

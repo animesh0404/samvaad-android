@@ -135,8 +135,12 @@ class MessageSender(
     ): SendResult {
         val adopted = localMetadata.readAdopted()
             ?: return SendResult.Failed(SendFailure.CryptoUnavailable)
+        // Bind-adopted records carry no handles: fail closed, never proceed
+        // to crypto without local private material.
+        val identityHandleId = adopted.identityHandleId
+            ?: return SendResult.Failed(SendFailure.CryptoUnavailable)
         val localIdentity = try {
-            restoreLocalIdentity(adopted.identityHandleId)
+            restoreLocalIdentity(identityHandleId)
         } catch (_: VaultException) {
             return SendResult.Failed(SendFailure.CryptoUnavailable)
         } catch (_: CryptoRecoveryException) {

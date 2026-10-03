@@ -90,6 +90,29 @@ class EnrollmentCoordinatorTest {
             serverAddress: String,
         ): DeviceList = listHandler()
 
+        override suspend fun approveDevice(
+            session: AuthSession,
+            serverAddress: String,
+            deviceId: String,
+        ): com.samvaad.android.enroll.DeviceRecord =
+            throw AssertionError("no approval in this slice")
+
+        override suspend fun bindDevice(
+            session: AuthSession,
+            serverAddress: String,
+            deviceId: String,
+            recoveryCode: String,
+        ): com.samvaad.android.enroll.DeviceRecord =
+            throw AssertionError("no recovery in this slice")
+
+        override suspend fun recoverEnroll(
+            session: AuthSession,
+            serverAddress: String,
+            recoveryCode: String,
+            request: com.samvaad.android.enroll.EnrollRequest,
+        ): com.samvaad.android.enroll.DeviceRecord =
+            throw AssertionError("no recovery in this slice")
+
         override suspend fun listRecipientDevices(
             session: AuthSession,
             serverAddress: String,
@@ -449,7 +472,8 @@ class EnrollmentCoordinatorTest {
             DeviceList("ENROLLED_ACTIVE", listOf(deviceRecordByIdentity(identity, status = "REVOKED")))
         }
         val final = runBlocking { coordinator().runBootstrap(session, server) }
-        assertTrue(final is BootstrapFinal.PendingApproval)
+        // Slice 10: a REVOKED row is a dead lineage (Denied), not pending.
+        assertTrue(final is BootstrapFinal.Denied)
         assertEquals("REVOKED", metadata.readAdopted()!!.statusHint)
         // No OTPK upload against a non-ACTIVE device.
         assertEquals(1, api.uploads.size) // only the first bootstrap upload

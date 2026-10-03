@@ -17,6 +17,51 @@ import com.samvaad.android.crypto.SpikeCryptoMaterial.SealedHandle
 import com.samvaad.android.crypto.SpikeCryptoMaterial.SignedPrekey
 
 /**
+ * Slice 10 companion-approval and recovery surface (top-level so Compose
+ * and tests can reference the outcomes without a coordinator instance).
+ * All outcomes derive from authoritative server truth; nothing here caches
+ * device status, roles, or approval decisions.
+ *
+ * Owner device snapshot for the active-device approval surface and the
+ * bind-existing-device picker. [ApprovalView.selfDeviceId] is this
+ * installation's adopted row when present in the server list;
+ * [ApprovalView.pending]/[ApprovalView.active] are the other owned rows by
+ * status. Server truth, never cached.
+ */
+data class ApprovalView(
+    val selfDeviceId: String?,
+    val selfActive: Boolean,
+    val pending: List<DeviceRecord>,
+    val active: List<DeviceRecord>,
+)
+
+sealed interface ApprovalLoad {
+    data class Ready(val view: ApprovalView) : ApprovalLoad
+    data class Failed(val kind: FailKind) : ApprovalLoad
+}
+
+sealed interface ApproveOutcome {
+    data class Approved(val deviceLabel: String) : ApproveOutcome
+    data object StillPending : ApproveOutcome
+    /** Target REVOKED or absent: converge by re-listing. */
+    data object Gone : ApproveOutcome
+    /** Server refused (403): this session may not approve. */
+    data object Denied : ApproveOutcome
+    data class Failed(val kind: FailKind) : ApproveOutcome
+}
+
+/**
+ * Recovery entry choice. [Bind] reuses an existing ACTIVE row (no key
+ * material generated); [NewDevice] creates a fresh identity through
+ * `POST /recovery/enroll`. The code itself travels only as a call
+ * argument — it is never persisted, logged, or retained.
+ */
+sealed interface RecoveryMode {
+    data class Bind(val deviceId: String) : RecoveryMode
+    data object NewDevice : RecoveryMode
+}
+
+/**
  * First-device bootstrap orchestrator. Kept out of Compose by design.
  *
  * Reconcile-first invariant: local crypto material is generated at most
@@ -129,6 +174,304 @@ class EnrollmentCoordinator(
         metadata.writeAdopted(adopted.copy(codesAcknowledged = true))
         return true
     }
+
+    /**
+     * Drop a dead lineage after [BootstrapFinal.Denied]: the adopted row is
+     * REVOKED/absent server-side, so both the adopted record and the
+     * attempt marker are cleared. The next [runBootstrap] generates fresh
+     * material and POSTs a new row — the dead deviceId is never reused.
+     * Clearing is legitimate here (not blind regeneration): Denied is only
+     * entered from authoritative server truth.
+     */
+    fun clearDeniedState() {
+        metadata.clearAdopted()
+        metadata.clearAttempt()
+    }
+
+    /**
+     * Load the owner device list for approval/recovery UI. Single-flight
+     * like [runBootstrap]; safe to retry (read-only GET).
+     */
+    suspend fun loadApprovalView(
+        session: AuthSession,
+        serverAddress: String,
+    ): ApprovalLoad {
+        if (!running.compareAndSet(false, true)) {
+            return ApprovalLoad.Failed(FailKind.ALREADY_RUNNING)
+        }
+        try {
+            val list = try {
+                api.listDevices(session, serverAddress)
+            } catch (e: EnrollException.Unauthorized) {
+                return ApprovalLoad.Failed(FailKind.UNAUTHORIZED)
+            } catch (e: EnrollException) {
+                return ApprovalLoad.Failed(FailKind.REJECTED)
+            } catch (e: IOException) {
+                return ApprovalLoad.Failed(FailKind.TRANSPORT_RETRYABLE)
+            }
+            val selfId = metadata.readAdopted()?.deviceId
+            val self = selfId?.let { id -> list.devices.firstOrNull { it.deviceId == id } }
+            val others = list.devices.filter { it.deviceId != selfId }
+            return ApprovalLoad.Ready(
+                ApprovalView(
+                    selfDeviceId = self?.deviceId,
+                    selfActive = self?.status == STATUS_ACTIVE,
+                    pending = others.filter { it.status == STATUS_PENDING },
+                    active = others.filter { it.status == STATUS_ACTIVE },
+                )
+            )
+        } finally {
+            running.set(false)
+        }
+    }
+
+    /**
+     * Approve one owned PENDING device from an ACTIVE-bound session.
+     * Exactly one POST; the outcome always converges through a fresh
+     * `GET /devices` — a 200 alone is not trusted without the row
+     * reading ACTIVE.
+     */
+    suspend fun approvePendingDevice(
+        session: AuthSession,
+        serverAddress: String,
+        deviceId: String,
+    ): ApproveOutcome {
+        if (!running.compareAndSet(false, true)) {
+            return ApproveOutcome.Failed(FailKind.ALREADY_RUNNING)
+        }
+        try {
+            try {
+                api.approveDevice(session, serverAddress, deviceId)
+            } catch (e: EnrollException.Unauthorized) {
+                return ApproveOutcome.Failed(FailKind.UNAUTHORIZED)
+            } catch (e: EnrollException.ServerRejected) {
+                // 403 without the recovery reason: the server refused this
+                // session (pending-bound, unbound, or foreign). Terminal.
+                return ApproveOutcome.Denied
+            } catch (e: EnrollException.NotFound) {
+                return convergeApproveTarget(session, serverAddress, deviceId)
+            } catch (e: EnrollException.Conflict) {
+                // 409 here means the target is REVOKED; converge on truth.
+                return convergeApproveTarget(session, serverAddress, deviceId)
+            } catch (e: EnrollException.RecoveryRequired) {
+                return ApproveOutcome.Failed(FailKind.REJECTED)
+            } catch (e: EnrollException.BadRequest) {
+                return ApproveOutcome.Failed(FailKind.REJECTED)
+            } catch (e: EnrollException) {
+                return ApproveOutcome.Failed(FailKind.REJECTED)
+            } catch (e: IOException) {
+                return ApproveOutcome.Failed(FailKind.TRANSPORT_RETRYABLE)
+            }
+            return convergeApproveTarget(session, serverAddress, deviceId)
+        } finally {
+            running.set(false)
+        }
+    }
+
+    private suspend fun convergeApproveTarget(
+        session: AuthSession,
+        serverAddress: String,
+        deviceId: String,
+    ): ApproveOutcome {
+        val list = try {
+            api.listDevices(session, serverAddress)
+        } catch (e: EnrollException.Unauthorized) {
+            return ApproveOutcome.Failed(FailKind.UNAUTHORIZED)
+        } catch (e: EnrollException) {
+            return ApproveOutcome.Failed(FailKind.REJECTED)
+        } catch (e: IOException) {
+            return ApproveOutcome.Failed(FailKind.TRANSPORT_RETRYABLE)
+        }
+        val current = list.devices.firstOrNull { it.deviceId == deviceId }
+            ?: return ApproveOutcome.Gone
+        if (current.status == STATUS_ACTIVE) {
+            return ApproveOutcome.Approved(deviceLabel(current))
+        }
+        if (current.status == STATUS_PENDING) {
+            return ApproveOutcome.StillPending
+        }
+        return ApproveOutcome.Gone
+    }
+
+    /**
+     * Recover with a single-use recovery code. Single-flight; the code is
+     * a transient argument only. Transport uncertainty never blind-retries:
+     * every uncertain outcome reconciles through `GET /devices` first, and
+     * only proven success continues. A consumed-or-wrong code surfaces as
+     * [BootstrapFinal.Failed] with [FailKind.REJECTED] so the UI can invite
+     * another code from the set.
+     */
+    suspend fun recoverWithCode(
+        session: AuthSession,
+        serverAddress: String,
+        recoveryCode: String,
+        mode: RecoveryMode,
+    ): BootstrapFinal {
+        if (recoveryCode.isBlank()) {
+            return BootstrapFinal.Failed(FailKind.REJECTED)
+        }
+        if (!running.compareAndSet(false, true)) {
+            return BootstrapFinal.Failed(FailKind.ALREADY_RUNNING)
+        }
+        try {
+            return when (mode) {
+                is RecoveryMode.Bind ->
+                    recoverBind(session, serverAddress, recoveryCode, mode.deviceId)
+                RecoveryMode.NewDevice ->
+                    recoverNewDevice(session, serverAddress, recoveryCode)
+            }
+        } finally {
+            running.set(false)
+        }
+    }
+
+    private suspend fun recoverBind(
+        session: AuthSession,
+        serverAddress: String,
+        recoveryCode: String,
+        deviceId: String,
+    ): BootstrapFinal {
+        val bound = try {
+            api.bindDevice(session, serverAddress, deviceId, recoveryCode)
+        } catch (e: EnrollException.Unauthorized) {
+            return BootstrapFinal.Failed(FailKind.UNAUTHORIZED)
+        } catch (e: EnrollException.Conflict) {
+            // 409 is either an inactive target or SessionAlreadyBound. The
+            // session started unbound and only ever attempted this target,
+            // so an already-bound session proves a prior bind succeeded —
+            // but only adopt when the target reads ACTIVE below.
+            return convergeBoundDevice(session, serverAddress, deviceId)
+        } catch (e: EnrollException.RecoveryRequired) {
+            return BootstrapFinal.RecoveryRequired
+        } catch (e: EnrollException) {
+            // Wrong/used code (403), unknown device (404), bad shape (400).
+            return BootstrapFinal.Failed(FailKind.REJECTED)
+        } catch (e: IOException) {
+            return BootstrapFinal.Failed(FailKind.TRANSPORT_RETRYABLE)
+        }
+        if (bound.status != STATUS_ACTIVE) {
+            return BootstrapFinal.Failed(FailKind.REJECTED)
+        }
+        return convergeBoundDevice(session, serverAddress, bound.deviceId)
+    }
+
+    private suspend fun convergeBoundDevice(
+        session: AuthSession,
+        serverAddress: String,
+        deviceId: String,
+    ): BootstrapFinal {
+        val list = try {
+            api.listDevices(session, serverAddress)
+        } catch (e: EnrollException.RecoveryRequired) {
+            return BootstrapFinal.RecoveryRequired
+        } catch (e: EnrollException.Unauthorized) {
+            return BootstrapFinal.Failed(FailKind.UNAUTHORIZED)
+        } catch (e: EnrollException) {
+            return BootstrapFinal.Failed(FailKind.REJECTED)
+        } catch (e: IOException) {
+            return BootstrapFinal.Failed(FailKind.TRANSPORT_RETRYABLE)
+        }
+        val current = list.devices.firstOrNull { it.deviceId == deviceId }
+            ?: return BootstrapFinal.Failed(FailKind.REJECTED)
+        if (current.status != STATUS_ACTIVE) {
+            return BootstrapFinal.Failed(FailKind.REJECTED)
+        }
+        persistAdoptedBind(current)
+        return BootstrapFinal.Active(deviceLabel(current), codesAcknowledged = true)
+    }
+
+    private suspend fun recoverNewDevice(
+        session: AuthSession,
+        serverAddress: String,
+        recoveryCode: String,
+    ): BootstrapFinal {
+        // Recovery ignores any stale adopted lineage: the adopted row is
+        // dead by definition (zero ACTIVE account-wide), and reusing its
+        // identity could collide with the revoked row. The attempt marker
+        // (or fresh generation) is the legitimate lineage.
+        val material = when (val load = loadRecoveryMaterial()) {
+            is MaterialLoad.Unrecoverable ->
+                return BootstrapFinal.Failed(FailKind.MISSING_MATERIAL)
+            is MaterialLoad.Ready -> load.material
+        }
+        val created = try {
+            api.recoverEnroll(session, serverAddress, recoveryCode, enrollRequest(material))
+        } catch (e: EnrollException.Conflict) {
+            return convergeRecoveryEnroll(session, serverAddress, material)
+        } catch (e: EnrollException.RecoveryRequired) {
+            return BootstrapFinal.RecoveryRequired
+        } catch (e: EnrollException.Unauthorized) {
+            return BootstrapFinal.Failed(FailKind.UNAUTHORIZED)
+        } catch (e: EnrollException) {
+            return BootstrapFinal.Failed(FailKind.REJECTED)
+        } catch (e: IOException) {
+            return BootstrapFinal.Failed(FailKind.TRANSPORT_RETRYABLE)
+        }
+        if (created.deviceIdentityPublicKey != identityB64(material)) {
+            return BootstrapFinal.Failed(FailKind.IDENTITY_MISMATCH)
+        }
+        persistAdopted(created, material, codesAcknowledged = true)
+        pendingCodes = null
+        return asRecoveryComplete(continueAfterAdopt(session, serverAddress, created, material) {})
+    }
+
+    private suspend fun convergeRecoveryEnroll(
+        session: AuthSession,
+        serverAddress: String,
+        material: LocalMaterial,
+    ): BootstrapFinal {
+        // 409 means this call created nothing. Only an ACTIVE row carrying
+        // our identity proves a prior attempt succeeded (lost response);
+        // anything else fails safe so the user spends another code.
+        val list = try {
+            api.listDevices(session, serverAddress)
+        } catch (e: EnrollException.RecoveryRequired) {
+            return BootstrapFinal.RecoveryRequired
+        } catch (e: EnrollException.Unauthorized) {
+            return BootstrapFinal.Failed(FailKind.UNAUTHORIZED)
+        } catch (e: EnrollException) {
+            return BootstrapFinal.Failed(FailKind.REJECTED)
+        } catch (e: IOException) {
+            return BootstrapFinal.Failed(FailKind.TRANSPORT_RETRYABLE)
+        }
+        val match = list.devices.firstOrNull {
+            it.deviceIdentityPublicKey == identityB64(material) && it.status == STATUS_ACTIVE
+        } ?: return BootstrapFinal.Failed(FailKind.REJECTED)
+        persistAdopted(match, material, codesAcknowledged = true)
+        if (match.availablePrekeys == 0L) {
+            return asRecoveryComplete(continueAfterAdopt(session, serverAddress, match, material) {})
+        }
+        metadata.clearAttempt()
+        return BootstrapFinal.Active(deviceLabel(match), codesAcknowledged = true)
+    }
+
+    private fun loadRecoveryMaterial(): MaterialLoad {
+        metadata.readAttempt()?.let { attempt ->
+            if (attempt.otpkIds.size != OTPK_BATCH_SIZE) return MaterialLoad.Unrecoverable
+            return restoreFromHandles(
+                registrationId = attempt.registrationId,
+                identityHandleId = attempt.identityHandleId,
+                signedHandleId = attempt.signedHandleId,
+                kyberHandleId = attempt.kyberHandleId,
+                otpkHandleIds = attempt.otpkHandleIds,
+                otpkIds = attempt.otpkIds,
+                expectedIdentityB64 = attempt.identityPublicKeyB64,
+            )
+        }
+        return MaterialLoad.Ready(generateAndSeal())
+    }
+
+    /**
+     * Recovery issues no codes, so there is nothing to acknowledge: map the
+     * bootstrap continuation's `Active(acked=false)` to acked without
+     * changing any other outcome.
+     */
+    private fun asRecoveryComplete(final: BootstrapFinal): BootstrapFinal =
+        if (final is BootstrapFinal.Active) {
+            final.copy(codesAcknowledged = true)
+        } else {
+            final
+        }
 
     // ---- internals ----
 
@@ -247,24 +590,36 @@ class EnrollmentCoordinator(
             return BootstrapFinal.Failed(FailKind.TRANSPORT_RETRYABLE)
         }
         val current = list.devices.firstOrNull { it.deviceId == adopted.deviceId }
-            ?: return BootstrapFinal.ReconciliationRequired("adopted-device-unknown")
+            ?: return BootstrapFinal.Denied(adoptedLabel(adopted))
         metadata.writeAdopted(
             adopted.copy(roleHint = current.deviceRole, statusHint = current.status)
         )
-        if (current.status != STATUS_ACTIVE) {
+        if (current.status == STATUS_ACTIVE) {
+            // Bind-adopted devices hold no local private material (bind
+            // accepts none): server truth says ACTIVE, so report Active
+            // without manufacturing handles. Downstream crypto paths keep
+            // their existing fail-closed behavior.
+            if (!adopted.hasLocalKeys) {
+                return BootstrapFinal.Active(deviceLabel(current), adopted.codesAcknowledged)
+            }
+            // Keys may have vanished out-of-band while metadata survived: verify
+            // before presenting Active. Messaging needs them; never pretend.
+            if (!verifyIdentityAvailable(adopted)) {
+                return BootstrapFinal.ReconciliationRequired("crypto-unavailable")
+            }
+            if (current.availablePrekeys == 0L) {
+                // Crash landed between adoption and the first upload: finish
+                // provisioning with the same sealed batch before going Active.
+                return finishProvisioning(session, serverAddress, adopted, current)
+            }
+            return BootstrapFinal.Active(deviceLabel(current), adopted.codesAcknowledged)
+        }
+        if (current.status == STATUS_PENDING) {
             return BootstrapFinal.PendingApproval(deviceLabel(current))
         }
-        // Keys may have vanished out-of-band while metadata survived: verify
-        // before presenting Active. Messaging needs them; never pretend.
-        if (!verifyIdentityAvailable(adopted)) {
-            return BootstrapFinal.ReconciliationRequired("crypto-unavailable")
-        }
-        if (current.availablePrekeys == 0L) {
-            // Crash landed between adoption and the first upload: finish
-            // provisioning with the same sealed batch before going Active.
-            return finishProvisioning(session, serverAddress, adopted, current)
-        }
-        return BootstrapFinal.Active(deviceLabel(current), adopted.codesAcknowledged)
+        // REVOKED, expired, or anything unexpected: the lineage is dead.
+        // Distinct from reconciliation — the UI offers a fresh enrollment.
+        return BootstrapFinal.Denied(deviceLabel(current))
     }
 
     /**
@@ -278,12 +633,21 @@ class EnrollmentCoordinator(
         adopted: AdoptedDevice,
         current: DeviceRecord,
     ): BootstrapFinal {
+        // Bind-adopted records carry no handles; without them there is no
+        // batch to re-upload. Callers normally skip this path for such
+        // records — this guard keeps it fail-closed regardless.
+        val identityHandleId = adopted.identityHandleId
+            ?: return BootstrapFinal.ReconciliationRequired("crypto-unavailable")
+        val signedHandleId = adopted.signedHandleId
+            ?: return BootstrapFinal.ReconciliationRequired("crypto-unavailable")
+        val kyberHandleId = adopted.kyberHandleId
+            ?: return BootstrapFinal.ReconciliationRequired("crypto-unavailable")
         val material = when (
             val load = restoreFromHandles(
                 registrationId = adopted.registrationId,
-                identityHandleId = adopted.identityHandleId,
-                signedHandleId = adopted.signedHandleId,
-                kyberHandleId = adopted.kyberHandleId,
+                identityHandleId = identityHandleId,
+                signedHandleId = signedHandleId,
+                kyberHandleId = kyberHandleId,
                 otpkHandleIds = adopted.otpkHandleIds,
                 otpkIds = null,
                 expectedIdentityB64 = adopted.identityPublicKeyB64,
@@ -311,7 +675,8 @@ class EnrollmentCoordinator(
 
     /** Best-effort presence check: unseal + restore the identity only. */
     private fun verifyIdentityAvailable(adopted: AdoptedDevice): Boolean = try {
-        restoreIdentity(adopted.identityHandleId)
+        val handleId = adopted.identityHandleId ?: return false
+        restoreIdentity(handleId)
         true
     } catch (_: VaultException) {
         false
@@ -323,11 +688,19 @@ class EnrollmentCoordinator(
 
     private fun loadOrGenerateMaterial(): MaterialLoad {
         metadata.readAdopted()?.let { adopted ->
+            // Bind-adopted records carry no handles by design; they must
+            // never reach the UUID parsers below (null would NPE).
+            val identityHandleId = adopted.identityHandleId
+                ?: return MaterialLoad.Unrecoverable
+            val signedHandleId = adopted.signedHandleId
+                ?: return MaterialLoad.Unrecoverable
+            val kyberHandleId = adopted.kyberHandleId
+                ?: return MaterialLoad.Unrecoverable
             return restoreFromHandles(
                 registrationId = adopted.registrationId,
-                identityHandleId = adopted.identityHandleId,
-                signedHandleId = adopted.signedHandleId,
-                kyberHandleId = adopted.kyberHandleId,
+                identityHandleId = identityHandleId,
+                signedHandleId = signedHandleId,
+                kyberHandleId = kyberHandleId,
                 otpkHandleIds = adopted.otpkHandleIds,
                 otpkIds = null,
             )
@@ -505,9 +878,40 @@ class EnrollmentCoordinator(
     private fun deviceLabel(device: DeviceRecord): String =
         "${device.deviceRole} · #${device.signalDeviceId}"
 
+    private fun adoptedLabel(adopted: AdoptedDevice): String =
+        "${adopted.roleHint} · #${adopted.signalDeviceId}"
+
+    /**
+     * Adopt a bind-recovered device: server truth only, no local handles
+     * (bind accepts no key material — manufacturing them would be lying
+     * about crypto capability). No codes are outstanding after a bind, so
+     * the record starts acknowledged.
+     */
+    private fun persistAdoptedBind(device: DeviceRecord) {
+        metadata.writeAdopted(
+            AdoptedDevice(
+                deviceId = device.deviceId,
+                signalDeviceId = device.signalDeviceId,
+                registrationId = device.registrationId,
+                identityPublicKeyB64 = device.deviceIdentityPublicKey,
+                signedPrekeyId = device.signedPrekeyId,
+                kyberPrekeyId = device.kyberPrekeyId,
+                otpkHighWaterMark = 0,
+                roleHint = device.deviceRole,
+                statusHint = device.status,
+                identityHandleId = null,
+                signedHandleId = null,
+                kyberHandleId = null,
+                otpkHandleIds = emptyList(),
+                codesAcknowledged = true,
+            )
+        )
+    }
+
     companion object {
         const val OTPK_BATCH_SIZE = 100
         const val STATUS_ACTIVE = "ACTIVE"
+        const val STATUS_PENDING = "PENDING"
     }
 
     // Set by runBootstrap from the enroll 201 before continueAfterAdopt runs.

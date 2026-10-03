@@ -36,16 +36,7 @@ class HttpE2eeDeviceApi(
         serverAddress: String,
         request: EnrollRequest,
     ): EnrollResult = withContext(Dispatchers.IO) {
-        val body = JSONObject()
-            .put("registrationId", request.registrationId)
-            .put("deviceIdentityPublicKey", request.deviceIdentityPublicKey)
-            .put("signedPrekeyId", request.signedPrekeyId)
-            .put("signedPrekey", request.signedPrekey)
-            .put("signedPrekeySignature", request.signedPrekeySignature)
-            .put("kyberPrekeyId", request.kyberPrekeyId)
-            .put("kyberPrekey", request.kyberPrekey)
-            .put("kyberPrekeySignature", request.kyberPrekeySignature)
-            .put("clientPlatform", request.clientPlatform)
+        val body = enrollJson(request)
         request.clientName?.let { body.put("clientName", it) }
         request.clientVersion?.let { body.put("clientVersion", it) }
         val (code, response) = post(
@@ -112,6 +103,90 @@ class HttpE2eeDeviceApi(
                     parseDevice(devices.getJSONObject(i))
                 },
             )
+        } catch (e: JSONException) {
+            throw EnrollException.Transport(e)
+        }
+    }
+
+    private fun enrollJson(request: EnrollRequest): JSONObject = JSONObject()
+        .put("registrationId", request.registrationId)
+        .put("deviceIdentityPublicKey", request.deviceIdentityPublicKey)
+        .put("signedPrekeyId", request.signedPrekeyId)
+        .put("signedPrekey", request.signedPrekey)
+        .put("signedPrekeySignature", request.signedPrekeySignature)
+        .put("kyberPrekeyId", request.kyberPrekeyId)
+        .put("kyberPrekey", request.kyberPrekey)
+        .put("kyberPrekeySignature", request.kyberPrekeySignature)
+        .put("clientPlatform", request.clientPlatform)
+
+    override suspend fun approveDevice(
+        session: AuthSession,
+        serverAddress: String,
+        deviceId: String,
+    ): DeviceRecord = withContext(Dispatchers.IO) {
+        require(deviceId.isNotBlank()) { "deviceId must be present" }
+        // The contract takes no request body; `{}` keeps the shared POST
+        // helper (which always frames a JSON body) without inventing fields.
+        val (code, response) = post(
+            session, serverAddress, "/api/e2ee/devices/$deviceId/approve", "{}"
+        )
+        if (code != HttpURLConnection.HTTP_OK) {
+            throw classifyDeviceAction(code, response)
+        }
+        try {
+            parseDevice(JSONObject(response))
+        } catch (e: JSONException) {
+            throw EnrollException.Transport(e)
+        }
+    }
+
+    override suspend fun bindDevice(
+        session: AuthSession,
+        serverAddress: String,
+        deviceId: String,
+        recoveryCode: String,
+    ): DeviceRecord = withContext(Dispatchers.IO) {
+        require(deviceId.isNotBlank()) { "deviceId must be present" }
+        // Blank codes fail locally: they can never be valid, and must not
+        // reach the wire (a used/blank code is indistinguishable from a
+        // wrong one once sent).
+        require(recoveryCode.isNotBlank()) { "recovery code must be present" }
+        val (code, response) = post(
+            session,
+            serverAddress,
+            "/api/e2ee/devices/$deviceId/bind",
+            JSONObject().put("recoveryCode", recoveryCode).toString(),
+        )
+        if (code != HttpURLConnection.HTTP_OK) {
+            throw classifyDeviceAction(code, response)
+        }
+        try {
+            parseDevice(JSONObject(response))
+        } catch (e: JSONException) {
+            throw EnrollException.Transport(e)
+        }
+    }
+
+    override suspend fun recoverEnroll(
+        session: AuthSession,
+        serverAddress: String,
+        recoveryCode: String,
+        request: EnrollRequest,
+    ): DeviceRecord = withContext(Dispatchers.IO) {
+        require(recoveryCode.isNotBlank()) { "recovery code must be present" }
+        val body = JSONObject()
+            .put("recoveryCode", recoveryCode)
+            .put("device", enrollJson(request))
+        request.clientName?.let { body.getJSONObject("device").put("clientName", it) }
+        request.clientVersion?.let { body.getJSONObject("device").put("clientVersion", it) }
+        val (code, response) = post(
+            session, serverAddress, "/api/e2ee/recovery/enroll", body.toString()
+        )
+        if (code != HttpURLConnection.HTTP_CREATED) {
+            throw classifyDeviceAction(code, response)
+        }
+        try {
+            parseDevice(JSONObject(response))
         } catch (e: JSONException) {
             throw EnrollException.Transport(e)
         }
@@ -493,7 +568,32 @@ class HttpE2eeDeviceApi(
         deviceRole = json.getString("deviceRole"),
         status = json.getString("status"),
         availablePrekeys = json.optLong("availablePrekeys", 0L),
+        kyberPrekeyId = if (json.isNull("kyberPrekeyId")) {
+            null
+        } else {
+            json.getInt("kyberPrekeyId")
+        },
     )
+
+    /**
+     * Approve/bind/recovery classifier. Same taxonomy as [classify], plus
+     * first-class 404 (unknown device) and 409 (revoked target / bound
+     * session / enrollment conflict) so callers can converge through
+     * `GET /devices` instead of treating every failure as generic.
+     */
+    private fun classifyDeviceAction(code: Int, response: String): EnrollException = when (code) {
+        HttpURLConnection.HTTP_UNAUTHORIZED -> EnrollException.Unauthorized()
+        HttpURLConnection.HTTP_BAD_REQUEST -> EnrollException.BadRequest()
+        HttpURLConnection.HTTP_FORBIDDEN ->
+            if (responseReason(response) == RECOVERY_REQUIRED_REASON) {
+                EnrollException.RecoveryRequired()
+            } else {
+                EnrollException.ServerRejected()
+            }
+        HttpURLConnection.HTTP_NOT_FOUND -> EnrollException.NotFound()
+        HttpURLConnection.HTTP_CONFLICT -> EnrollException.Conflict()
+        else -> EnrollException.ServerRejected()
+    }
 
     /** Maps status codes to the typed taxonomy; the 403 reason token is inspected. */
     private fun classify(code: Int, response: String): EnrollException = when (code) {
