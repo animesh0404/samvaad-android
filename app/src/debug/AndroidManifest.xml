@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  DEBUG-ONLY manifest overlay.
+
+  Wires the DEBUG-only Network Security Configuration
+  (@xml/network_security_config, which itself lives in src/debug) so that
+  ONLY debug builds trust the LAN development certificate. The main
+  manifest intentionally declares no networkSecurityConfig: release builds
+  keep Android's default platform trust store and hostname verification.
+
+  Manifest merger combines this overlay with src/main/AndroidManifest.xml
+  for debuggable builds only.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+  <application android:networkSecurityConfig="@xml/network_security_config" />
+</manifest>
