@@ -1,5 +1,6 @@
 package com.samvaad.android
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -16,10 +17,12 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -31,22 +34,43 @@ import androidx.compose.ui.unit.dp
 import com.samvaad.android.crypto.AndroidCryptoVault
 import com.samvaad.android.crypto.AndroidKeystoreKeyProvider
 import com.samvaad.android.crypto.AndroidSignalAdapter
+import com.samvaad.android.crypto.MessageContentSealer
+import com.samvaad.android.crypto.VaultException
+import com.samvaad.android.crypto.WrappingKeyProvider
+import com.samvaad.android.db.MessageDatabase
+import com.samvaad.android.db.MessageEntity
 import com.samvaad.android.enroll.ApprovalLoad
 import com.samvaad.android.enroll.ApprovalView
 import com.samvaad.android.enroll.ApproveOutcome
 import com.samvaad.android.enroll.BootstrapFinal
 import com.samvaad.android.enroll.BootstrapProgress
 import com.samvaad.android.enroll.DeviceRecord
+import com.samvaad.android.enroll.E2eeDeviceApi
+import com.samvaad.android.enroll.EnrollException
 import com.samvaad.android.enroll.EnrollmentCoordinator
 import com.samvaad.android.enroll.FailKind
 import com.samvaad.android.enroll.FileDeviceMetadataStore
 import com.samvaad.android.enroll.HttpE2eeDeviceApi
+import com.samvaad.android.enroll.RecipientDeviceRecord
 import com.samvaad.android.enroll.RecoveryMode
+import com.samvaad.android.session.FileSessionMetadataStore
+import com.samvaad.android.session.InboxProcessor
+import com.samvaad.android.session.MessageSender
+import com.samvaad.android.session.ReconciliationSweep
+import com.samvaad.android.session.SendResult
+import com.samvaad.android.session.SessionDeviceLocks
+import com.samvaad.android.session.SessionEstablisher
+import com.samvaad.android.session.SessionEstablishResult
+import com.samvaad.android.session.SessionMetadataStore
 import com.samvaad.android.session.SessionRefresher
 import com.samvaad.android.session.SessionStore
 import com.samvaad.android.ui.theme.SamvaadTheme
+import java.io.IOException
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * Authenticated surface with first-device bootstrap (Slice: enrollment).
@@ -114,6 +138,37 @@ private const val APPROVAL_DENIED_MESSAGE =
 private const val APPROVAL_NONE_MESSAGE = "No devices are waiting for approval."
 private const val APPROVAL_INACTIVE_MESSAGE =
     "Approval needs an active device on this installation."
+private const val CONVERSATIONS_LOAD_FAILED_MESSAGE =
+    "Could not load conversations."
+private const val MESSAGES_LOAD_FAILED_MESSAGE =
+    "Could not load messages."
+private const val SYNC_FAILED_MESSAGE =
+    "Sync failed. Check the connection and try again."
+private const val NOT_FRIENDS_MESSAGE =
+    "You can only message friends."
+private const val USER_NOT_FOUND_MESSAGE =
+    "User not found. Check the name and try again."
+private const val DIRECTORY_FAILED_MESSAGE =
+    "Could not load devices. Check the connection and try again."
+private const val SEND_FAILED_MESSAGE =
+    "Could not send. Check the connection and try again."
+
+/**
+ * Slice 11 messaging dependencies. One holder per authenticated screen:
+ * exactly ONE [SessionDeviceLocks] is shared by sender, establisher
+ * paths, and sweep (the sweep builds its own sender/inbox on the same
+ * holder), so SessionRecord mutation stays serialized per remote
+ * device. No DI framework; explicit construction in [remember].
+ */
+private class MessagingGraph(
+    val api: E2eeDeviceApi,
+    val db: MessageDatabase,
+    val sessions: SessionMetadataStore,
+    val sealer: MessageContentSealer,
+    val sender: MessageSender,
+    val establisher: SessionEstablisher,
+    val sweep: ReconciliationSweep,
+)
 
 @Composable
 fun HomeScreen(
@@ -129,6 +184,13 @@ fun HomeScreen(
      * tests: logout then only leaves the screen, with nothing to wipe.
      */
     sessionStore: SessionStore? = null,
+    /**
+     * Test seams for the Slice 11 messaging graph. Production passes
+     * null: HTTP goes through the real API boundary and the vault/sealer
+     * use the Keystore wrapping key.
+     */
+    deviceApi: E2eeDeviceApi? = null,
+    wrappingKeys: WrappingKeyProvider? = null,
     onLogout: () -> Unit = {},
 ) {
     val context = LocalContext.current.applicationContext
@@ -380,6 +442,271 @@ fun HomeScreen(
         )
     }
 
+    // ---- Slice 11 messaging wiring (presentation only; reuse only) ----
+
+    val keys = remember(wrappingKeys) {
+        wrappingKeys ?: AndroidKeystoreKeyProvider()
+    }
+    val messaging = remember(session, serverAddress, keys) {
+        val deviceMeta = FileDeviceMetadataStore(context)
+        val locks = SessionDeviceLocks()
+        val sessionMeta = FileSessionMetadataStore(context)
+        val adapter = AndroidSignalAdapter()
+        val cryptoVault = AndroidCryptoVault(context, keys)
+        val sessionVault =
+            AndroidCryptoVault(context, keys, FileSessionMetadataStore.SUBDIR)
+        val sealer = MessageContentSealer(keys)
+        val api = deviceApi ?: HttpE2eeDeviceApi()
+        val db = MessageDatabase.open(context)
+        MessagingGraph(
+            api = api,
+            db = db,
+            sessions = sessionMeta,
+            sealer = sealer,
+            sender = MessageSender(
+                api = api,
+                localMetadata = deviceMeta,
+                sessions = sessionMeta,
+                adapter = adapter,
+                identityVault = cryptoVault,
+                sessionVault = sessionVault,
+                deviceLocks = locks,
+                db = db,
+                contentSealer = sealer,
+            ),
+            establisher = SessionEstablisher(
+                api = api,
+                localMetadata = deviceMeta,
+                sessions = sessionMeta,
+                adapter = adapter,
+                identityVault = cryptoVault,
+                sessionVault = sessionVault,
+            ),
+            sweep = ReconciliationSweep(
+                api = api,
+                localMetadata = deviceMeta,
+                sessions = sessionMeta,
+                adapter = adapter,
+                cryptoVault = cryptoVault,
+                sessionVault = sessionVault,
+                deviceLocks = locks,
+                db = db,
+                contentSealer = sealer,
+            ),
+        )
+    }
+
+    var selectedConversationId by rememberSaveable { mutableStateOf<String?>(null) }
+    var conversations by remember { mutableStateOf<List<ConversationRow>?>(null) }
+    var conversationsLoadError by remember { mutableStateOf<String?>(null) }
+    var detailPeer by remember { mutableStateOf("") }
+    var detailMessages by remember { mutableStateOf<List<MessageRow>?>(null) }
+    var detailLoadError by remember { mutableStateOf<String?>(null) }
+    var syncing by remember { mutableStateOf(false) }
+    var syncError by remember { mutableStateOf<String?>(null) }
+    var composerUsername by rememberSaveable { mutableStateOf("") }
+    var composerDraft by rememberSaveable { mutableStateOf("") }
+    var discoveredDevices by remember { mutableStateOf<List<RecipientDeviceRecord>?>(null) }
+    var findingDevices by remember { mutableStateOf(false) }
+    var directoryError by remember { mutableStateOf<String?>(null) }
+    var selectedDeviceId by remember { mutableStateOf<String?>(null) }
+    var sending by remember { mutableStateOf(false) }
+    var sendError by remember { mutableStateOf<String?>(null) }
+
+    fun lookupUsername(deviceId: String): String? =
+        messaging.sessions.read(deviceId)?.remoteUsername
+
+    fun openRowText(messageId: String, sealed: ByteArray): String? = try {
+        messaging.sealer.open(messageId, sealed)
+            .toString(Charsets.UTF_8)
+            .takeIf { it.isNotEmpty() }
+    } catch (_: VaultException) {
+        null
+    } catch (_: IllegalArgumentException) {
+        null
+    }
+
+    suspend fun loadConversations() {
+        conversationsLoadError = null
+        try {
+            val grouped = withContext(Dispatchers.IO) {
+                messaging.db.messageDao().knownConversationIds()
+                    .filter { it.isNotEmpty() }
+                    .associateWith { id ->
+                        val dao = messaging.db.messageDao()
+                        val max = dao.sequencesFor(id).maxOrNull()
+                            ?: return@associateWith emptyList()
+                        dao.historyPage(
+                            id,
+                            maxOf(0L, max - PREVIEW_TAIL_LIMIT),
+                            PREVIEW_TAIL_LIMIT,
+                        )
+                    }
+            }
+            conversations = withContext(Dispatchers.IO) {
+                buildConversationList(
+                    grouped,
+                    { conversationId, rows -> peerLabelFor(conversationId, rows, ::lookupUsername) },
+                    { entity ->
+                        entity.plaintextSealed?.let { openRowText(entity.messageId, it) }
+                            ?: MESSAGE_UNREADABLE
+                    },
+                )
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            conversationsLoadError = CONVERSATIONS_LOAD_FAILED_MESSAGE
+        }
+    }
+
+    suspend fun loadDetail(conversationId: String) {
+        detailLoadError = null
+        try {
+            val triple = withContext(Dispatchers.IO) {
+                val rows = messaging.db.messageDao()
+                    .historyPage(conversationId, 0, MESSAGE_PAGE_LIMIT)
+                val peer = peerLabelFor(conversationId, rows, ::lookupUsername)
+                val mapped = rows.map { entity ->
+                    mapMessageRow(
+                        entity,
+                        senderLabelFor(entity, ::lookupUsername),
+                        ::openRowText,
+                    )
+                }
+                Triple(peer, mapped, Unit)
+            }
+            detailPeer = triple.first
+            detailMessages = triple.second
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            detailLoadError = MESSAGES_LOAD_FAILED_MESSAGE
+        }
+    }
+
+    fun openConversation(conversationId: String) {
+        selectedConversationId = conversationId
+        detailMessages = null
+        detailLoadError = null
+        sendError = null
+        // Prefill the composer only with a resolved username, never with
+        // a fallback conversation ID.
+        val peer = conversations
+            ?.firstOrNull { it.conversationId == conversationId }
+            ?.peerLabel
+        if (composerUsername.isBlank() && peer != null && peer != conversationId) {
+            composerUsername = peer
+        }
+        discoveredDevices = null
+        selectedDeviceId = null
+        directoryError = null
+        scope.launch { loadDetail(conversationId) }
+    }
+
+    fun closeConversation() {
+        selectedConversationId = null
+        detailMessages = null
+        detailLoadError = null
+    }
+
+    fun sync() {
+        // Main-thread guard like the approval taps: at most one sweep runs.
+        if (syncing) return
+        syncing = true
+        scope.launch {
+            try {
+                val report = messaging.sweep.sweep(session, serverAddress)
+                syncError = sweepErrorMessage(report)
+                loadConversations()
+                selectedConversationId?.let { loadDetail(it) }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                syncError = SYNC_FAILED_MESSAGE
+            } finally {
+                syncing = false
+            }
+        }
+    }
+
+    fun findDevices() {
+        val username = composerUsername.trim()
+        if (username.isEmpty() || findingDevices) return
+        findingDevices = true
+        scope.launch {
+            try {
+                discoveredDevices =
+                    messaging.api.listRecipientDevices(session, serverAddress, username)
+                directoryError = null
+                selectedDeviceId = null
+            } catch (e: EnrollException.Forbidden) {
+                directoryError = NOT_FRIENDS_MESSAGE
+            } catch (e: EnrollException.NotFound) {
+                directoryError = USER_NOT_FOUND_MESSAGE
+            } catch (e: EnrollException.Unauthorized) {
+                directoryError = UNAUTHORIZED_MESSAGE
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: EnrollException) {
+                directoryError = DIRECTORY_FAILED_MESSAGE
+            } catch (_: IOException) {
+                directoryError = DIRECTORY_FAILED_MESSAGE
+            } finally {
+                findingDevices = false
+            }
+        }
+    }
+
+    fun send() {
+        // Main-thread single-flight: each tap is at most one logical send,
+        // so duplicate taps can never mint duplicate messages.
+        if (sending) return
+        val deviceId = selectedDeviceId ?: return
+        val username = composerUsername.trim()
+        val text = composerDraft
+        if (username.isEmpty() || text.isBlank()) return
+        sending = true
+        scope.launch {
+            try {
+                when (val established = messaging.establisher.establish(
+                    session, serverAddress, username, deviceId
+                )) {
+                    is SessionEstablishResult.Established -> {
+                        when (val sent = messaging.sender.send(
+                            session, serverAddress, username, deviceId,
+                            text.toByteArray(Charsets.UTF_8),
+                        )) {
+                            is SendResult.Sent -> {
+                                composerDraft = ""
+                                sendError = null
+                                selectedConversationId = sent.conversationId
+                                loadConversations()
+                                loadDetail(sent.conversationId)
+                            }
+                            is SendResult.Failed -> {
+                                // The durable row (if any) is reloaded below;
+                                // the live retry handle is intentionally not
+                                // kept: Sync recovers durable rows instead.
+                                sendError = sendFailureMessage(sent.kind)
+                                loadConversations()
+                                selectedConversationId?.let { loadDetail(it) }
+                            }
+                        }
+                    }
+                    else -> sendError =
+                        establishFailureMessage(established) ?: SEND_FAILED_MESSAGE
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                sendError = SEND_FAILED_MESSAGE
+            } finally {
+                sending = false
+            }
+        }
+    }
+
     val codes = (enrollState as? EnrollUiState.Codes)?.codes
     if (codes != null) {
         RecoveryCodesScreen(codes = codes, onAcknowledge = ::acknowledge)
@@ -523,6 +850,71 @@ fun HomeScreen(
                             TextButton(onClick = ::refreshApproval) {
                                 Text("Refresh")
                             }
+                        }
+                    }
+                    // Slice 11 messaging is available only with local
+                    // crypto handles. Handle-less ("Device bound") installs
+                    // stay fail-closed: no list, no composer, no sync.
+                    if (hasLocalKeys) {
+                        LaunchedEffect(Unit) {
+                            loadConversations()
+                        }
+
+                        @Composable
+                        fun MessageComposer() {
+                            ComposerUi(
+                                username = composerUsername,
+                                onUsernameChange = {
+                                    composerUsername = it
+                                    discoveredDevices = null
+                                    selectedDeviceId = null
+                                    directoryError = null
+                                },
+                                draft = composerDraft,
+                                onDraftChange = { composerDraft = it },
+                                devices = discoveredDevices,
+                                findingDevices = findingDevices,
+                                directoryError = directoryError,
+                                selectedDeviceId = selectedDeviceId,
+                                onFindDevices = ::findDevices,
+                                onSelectDevice = { selectedDeviceId = it },
+                                sending = sending,
+                                sendError = sendError,
+                                onSend = ::send,
+                            )
+                        }
+
+                        val openId = selectedConversationId
+                        if (openId == null) {
+                            ConversationListUi(
+                                conversations = conversations,
+                                loadError = conversationsLoadError,
+                                onRetryLoad = {
+                                    scope.launch { loadConversations() }
+                                },
+                                syncing = syncing,
+                                syncError = syncError,
+                                onSync = ::sync,
+                                onSelect = ::openConversation,
+                            )
+                            MessageComposer()
+                        } else {
+                            BackHandler {
+                                closeConversation()
+                            }
+                            ConversationDetailUi(
+                                peerLabel = detailPeer.ifEmpty { openId },
+                                messages = detailMessages,
+                                loadError = detailLoadError,
+                                onRetryLoad = {
+                                    scope.launch { loadDetail(openId) }
+                                },
+                                syncing = syncing,
+                                syncError = syncError,
+                                onBack = ::closeConversation,
+                                onSync = ::sync,
+                                composer = { MessageComposer() },
+                            )
                         }
                     }
                 }
