@@ -96,28 +96,32 @@ DONE.
 - A shared per-remote-device lock serializes outbound and inbound SessionRecord mutation.
 - No local message store, history, cursor reconciliation, realtime, background polling, push, or UI was introduced.
 
+### Slice 9 — Durable message state and history reconciliation
+
+DONE.
+
+- Room `MessageDatabase` persists durable conversation/message facts under `getNoBackupFilesDir()`.
+- `MessageContentSealer` protects message plaintext at rest with the existing Keystore wrapping-key infrastructure; private keys and Signal `SessionRecord` material remain in the crypto vault.
+- Outbound recovery uses `PENDING_SEAL → SEALED → SENT`; sealed accepted bytes/request IDs can be replayed exactly, while stranded pending rows are safely rebuilt from sealed plaintext.
+- Inbound recovery uses durable message rows before ACK; mailbox redelivery converges through the durable-row/duplicate path.
+- Server-assigned message identifiers and sequence/timestamp metadata are persisted separately from local message IDs.
+- Android consumes the existing conversation-history and synchronization-cursor APIs.
+- Cursor advancement is contiguous-only and never skips sequence gaps.
+- `ReconciliationSweep` is bounded and idempotent, covering outbox recovery, mailbox/ACK reconciliation, known-conversation history ingestion, and cursor advancement.
+- Room and Keystore are separate durability systems; recovery is achieved with explicit state machines rather than a fake cross-store transaction.
+- No scheduler, background worker, push, realtime, chat UI, Companion history sync, backup, or server change was introduced.
+
 ## Next
 
-### Slice 9 — Message-state and history reconciliation
+### Slice 10 — Existing-device Companion approval and recovery UX
 
-The next slice should define how consumed mailbox envelopes become durable client message state and how that state relates to the server's existing durable history and synchronization cursors.
+This is the next planned Android slice from the existing roadmap.
 
-This begins with an architecture audit of the current Android message-transport state and the actual server history/cursor implementation. Do not implement before the audit establishes the required invariants and the smallest persistence boundary.
-
-The local persistence model is intentionally **not locked yet**. Room, DataStore, or another persistence framework must not be introduced until that boundary is explicitly decided.
-
-Slice 9 remains separate from:
-
-- Companion approval/recovery;
-- Primary-owned durable history;
-- Primary-to-Companion history synchronization;
-- realtime/push delivery;
-- OTPK replenishment and Kyber rotation.
+It should remain limited to the already-defined server device approval/recovery contracts and Android UX/state boundaries. Do not invent Primary-gated approval semantics, succession, liveness expiry, or new server endpoints.
 
 ## Subsequent planned slices
 
-10. Existing-device Companion approval and recovery UX.
-11. Primary-owned durable conversation history.
+11. Primary-owned durable conversation history presentation/behavior.
 12. Primary-to-Companion history synchronization once its protocol is defined.
 13. Web Companion client after the Android Primary vertical slice.
 
