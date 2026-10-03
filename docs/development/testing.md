@@ -80,6 +80,18 @@ The durable message-state and reconciliation implementation was committed as `27
 
 The earlier exact-count failure observed during the Slice 9 instrumented work was caused by stale app data. The app data was cleared, the same test was rerun without weakening the assertion, and the full emulator and physical suites passed.
 
+### Slice 10
+
+The Companion approval and recovery UX implementation was committed as f19d11d.
+
+- Host unit suite: 361/361 pass after the final approval-body and bind-without-keys UX hardening changes.
+- Debug APK build succeeded.
+- git diff --check was clean before the checkpoint commit.
+- Previously completed instrumented coverage remained green: 29/29 on the API 33 emulator, plus the physical Pixel 6a Keystore checks 5/5 and 5/5 during Slice 10 implementation validation.
+- The final two hardening changes were UI/host-test and HTTP-contract-test changes only, so the full 29/29 instrumented battery was not rerun after those final changes; the documentation does not claim that it was.
+- Real authenticated server approval/recovery round-trips were not completed because safe test credentials were unavailable. Unauthenticated/TLS checks were performed without mutating server state.
+- Recovery-code UI tests verify transient handling and clearing; approval tests verify the empty JSON body contract; bind-without-local-keys is explicitly qualified in the UI.
+
 ## Commands
 
 ```bash

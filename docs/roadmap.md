@@ -115,13 +115,26 @@ DONE.
 
 ### Slice 10 — Existing-device Companion approval and recovery UX
 
-This is the next planned Android slice from the existing roadmap.
+DONE.
 
-It should remain limited to the already-defined server device approval/recovery contracts and Android UX/state boundaries. Do not invent Primary-gated approval semantics, succession, liveness expiry, or new server endpoints.
+- Pending enrollment is surfaced with manual GET /api/e2ee/devices status re-query; there is no polling.
+- An ACTIVE-bound device can review and approve pending devices using the existing approval contract.
+- Revoked/denied pending enrollment converges to a distinct denied state and can be restarted as a fresh enrollment.
+- Recovery accepts a transient code and supports both existing-device bind and recover-enroll-new-device using the existing server contracts.
+- Bind does not carry private keys. A bind-adopted installation without local crypto handles is explicitly shown as **Device bound** and remains unable to perform messaging until recovery-as-new creates local keys.
+- Recovery enrollment uses the normal local crypto generation path and existing 100-OTPK upload.
+- Recovery-code rotation, polling, push, realtime, Primary-gated approval, succession, and liveness remain outside this slice.
+- No server implementation changes were made.
+- The authenticated real-server round-trip was not completed because safe credentials were unavailable; no server state was mutated for that validation gap.
+
+## Next
+
+### Slice 11 — Primary-owned durable conversation history presentation and behavior
+
+This is the next planned Android slice. It should turn the existing durable message-state boundary into user-facing conversation/history behavior without inventing the future Companion history-sync protocol or server retention rules.
 
 ## Subsequent planned slices
 
-11. Primary-owned durable conversation history presentation/behavior.
 12. Primary-to-Companion history synchronization once its protocol is defined.
 13. Web Companion client after the Android Primary vertical slice.
 

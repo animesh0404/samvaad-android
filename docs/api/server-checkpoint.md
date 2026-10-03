@@ -50,7 +50,12 @@ Android currently consumes existing server contracts for:
 - device-scoped mailbox fetch;
 - per-message mailbox acknowledgment;
 - conversation history reads;
-- per-device/per-conversation synchronization-cursor reads and advancement.
+- per-device/per-conversation synchronization-cursor reads and advancement;
+- device-list status queries for enrollment convergence;
+- Companion approval by an existing ACTIVE-bound device;
+- recovery bind to an existing ACTIVE device;
+- recovery enrollment of a new device;
+- initial 100-OTPK upload after a recovery enrollment.
 
 For mailbox consumption, Android uses the existing `GET /api/e2ee/mailbox?limit=N` and `POST /api/e2ee/mailbox/ack` contracts. These are existing server endpoints; Android introduces no server API for Slice 8 or Slice 9.
 
@@ -64,6 +69,21 @@ The server validates conversation/device ownership and cursor bounds. Android tr
 
 The server remains cryptographically blind. Its durable ciphertext history remains a transition-state mechanism while the target architecture moves long-term history authority to the Android Primary.
 
+## Slice 10 device approval and recovery contracts
+
+Android uses the existing server device-management contracts without introducing Android-specific endpoints:
+
+- GET /api/e2ee/devices — authoritative device/enrollment state used for pending/denied/recovery convergence;
+- POST /api/e2ee/devices/{deviceId}/approve — an ACTIVE-bound device approves a PENDING device; there is no dedicated deny endpoint;
+- DELETE /api/e2ee/devices/{deviceId} — a PENDING device can be revoked as the server's denial mechanism;
+- POST /api/e2ee/recovery/enroll — creates and binds a new ACTIVE recovery device from a recovery code and the normal enrollment material;
+- POST /api/e2ee/devices/{deviceId}/bind — binds an unbound session to an existing ACTIVE owned device using a recovery code; no private key material is accepted;
+- existing PUT /api/e2ee/devices/{deviceId}/one-time-prekeys — uploads the normal 100-OTPK batch after recovery enrollment.
+
+Recovery codes are supplied transiently by Android and are not persisted. Recovery-code rotation is not integrated in this slice.
+
+The Android UI re-queries device state manually; it does not add polling, push, realtime, or new approval semantics. A bind-adopted installation may be server-bound but have no local private keys; Android therefore qualifies that state and keeps messaging fail-closed until a new-device recovery enrollment creates local crypto material.
+
 ## No server changes in Slice 9
 
 Slice 9 required **no server implementation changes**.
@@ -73,3 +93,7 @@ The Android checkpoint `27edc0e1dfaa51b839e7d9aee06a3cc0f46825c8` consumed the e
 No Android-specific endpoint was introduced. No server retention/eviction policy, Primary succession/liveness behavior, Primary-to-Companion history-sync protocol, push contract, or backup protocol was added.
 
 No Android client should infer future server behavior from this checkpoint.
+
+## No server changes in Slice 10
+
+Slice 10 required no server implementation changes. It consumes the approval, revocation-as-denial, recovery-enroll, bind, and device-list contracts already present in the server baseline. Primary-gated approval, recovery-code rotation, succession, liveness, and new Android-specific endpoints remain deferred.

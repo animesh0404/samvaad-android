@@ -6,7 +6,7 @@ Android is the **PRIMARY product device**. Web is a future COMPANION client. TUI
 
 ## Current state
 
-Slices 0–9 are complete.
+Slices 0–10 are complete.
 
 The app is a single-`:app`-module Compose application with Samvaad branding, HTTPS authentication, durable authenticated-session restart handling, first-device E2EE enrollment, durable libsignal device/prekey/Kyber material, outbound Signal session establishment, encrypted message submission, inbound mailbox consumption/decryption, and durable message-state/history reconciliation.
 
@@ -41,7 +41,7 @@ Current public server baseline:
 
 This baseline enforces server-assigned device roles: one non-revoked PRIMARY and up to four non-revoked COMPANIONS, within the five-device non-revoked limit.
 
-The server already has E2EE device/enrollment, prekey/recovery, recipient-device discovery, OTPK claim, ciphertext transport, mailbox, history, synchronization-cursor, and device-level realtime foundations. Android currently consumes authentication, enrollment, recipient discovery, OTPK claim, ciphertext submission, mailbox fetch, mailbox acknowledgment, conversation history, and synchronization-cursor read/write.
+The server already has E2EE device/enrollment, prekey/recovery, recipient-device discovery, OTPK claim, ciphertext transport, mailbox, history, synchronization-cursor, and device-level realtime foundations. Android currently consumes authentication, enrollment, recipient discovery, OTPK claim, ciphertext submission, mailbox fetch, mailbox acknowledgment, conversation history, synchronization-cursor read/write, and the existing device approval/recovery contracts. The message-state and reconciliation code is currently a headless bounded capability; it is not yet wired to a scheduler, background worker, push trigger, or chat/history UI.
 
 The server's durable ciphertext history is a **transition state**. The target architecture makes the Android Primary the durable history authority and uses the server as a bounded delivery/replay layer. Retention/eviction and the Primary-to-Companion history-sync protocol are not yet locked.
 
@@ -75,12 +75,14 @@ Android does **not** yet provide:
 - push notifications;
 - OTPK replenishment;
 - Kyber rotation;
-- Companion approval/recovery UX;
+
 - identity/fingerprint verification UI;
 - Primary-to-Companion history synchronization;
 - encrypted backup/restore;
 - server retention/eviction policy;
-- server-side Primary-to-Companion history-sync protocol.
+- server-side Primary-to-Companion history-sync protocol;
+- recovery-code rotation;
+- automatic/polling companion approval or recovery.
 
 Reconciliation is currently a headless bounded operation; no scheduler, push trigger, or background worker has been added.
 

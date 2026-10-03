@@ -21,13 +21,14 @@ This document describes the Android repository as it exists now. It does not des
 - The bootstrap has been verified to build and launch on a Pixel 6a API 33 emulator.
 - Local-only libsignal feasibility spike (ADR 0003): `AndroidSignalAdapter` isolates `org.signal:libsignal-*` 0.86.5 and proves in-memory generation and parsing/verification of identity, signed-prekey, Kyber, and OTPK material on emulator and physical Pixel 6a. The AGPL distribution decision remains outstanding.
 - Keystore-backed crypto vault (ADR 0004): `AndroidCryptoVault` seals libsignal record blobs under a non-exportable AES-256-GCM Keystore wrapping key into `getNoBackupFilesDir()`, with fail-closed corruption/missing-key handling and restart/reboot proof.
-- First-device bootstrap enrollment (ADR 0005): `EnrollmentCoordinator` performs reconcile-first enrollment on the authenticated session, uploads exactly 100 OTPKs when ACTIVE, and exposes the 25 first-bootstrap recovery codes once with explicit acknowledgment. Companion approval and recovery UX remain absent.
+- First-device bootstrap enrollment (ADR 0005): `EnrollmentCoordinator` performs reconcile-first enrollment on the authenticated session, uploads exactly 100 OTPKs when ACTIVE, and exposes the 25 first-bootstrap recovery codes once with explicit acknowledgment.
 - Durable refresh-token session (ADR 0006): `FileSessionStore` seals the refresh bundle in a separate no-backup namespace; access tokens remain memory-only. `SessionRefresher` performs launch-time single-flight refresh/rotation. Logout wipes only the auth-session record and leaves device/crypto state intact.
 - Outbound Signal session establishment (ADR 0007): recipient device discovery and OTPK claim produce a validated, pinned `SignalProtocolAddress(remoteUsername, remoteSignalDeviceId)` session. The durable `SessionRecord` is sealed before remote session metadata is recorded, and valid sessions are reused without rediscovery/claim.
 - Slice 7 outbound encrypted message submission: `MessageSender` loads an existing established session, encrypts with real libsignal, persists the post-encrypt `SessionRecord` before HTTP submission, submits the existing server ciphertext envelope, and retries an ambiguous transport outcome with the same in-memory request bytes/request ID rather than re-encrypting.
 - Slice 8 inbound mailbox consumption and Signal decryption: `InboxProcessor` fetches a small device-scoped mailbox batch, resolves each `senderDeviceId` against an existing `SignalSessionEntry`, selects `PREKEY_INIT` vs `RATCHET` from the server-supplied envelope type, decrypts through real libsignal 0.86.5, seals the post-decrypt `SessionRecord`, and only then acknowledges that message ID.
 - Inbound duplicate processing is explicit: a libsignal `DuplicateMessageException` is treated as proof that the message was already processed when the durable local message row exists, so it is acknowledged without delivering plaintext again. Other decrypt/persistence failures remain unacknowledged for redelivery.
 - Outbound and inbound session mutation share the same per-remote-device `SessionDeviceLocks` holder so one `SessionRecord` cannot be mutated concurrently in opposite directions.
+- Companion approval and recovery UX (Slice 10): `HomeScreen` can manually re-query device state for pending/denied enrollment, an ACTIVE-bound device can approve pending devices, and recovery can either bind the session to an existing ACTIVE device or enroll a fresh device. Recovery codes are transient Compose state and are cleared after attempts or leaving the recovery surface.
 
 ### Slice 9 — Durable message state and reconciliation
 
@@ -98,6 +99,8 @@ The sweep uses bounded mailbox/history limits and a bounded history-page count. 
 
 The same `SessionDeviceLocks` holder must be shared by outbound, inbound, and reconciliation paths so SessionRecord mutation remains serialized per remote device.
 
+The current app does not automatically invoke `ReconciliationSweep`; Slice 9 establishes and tests the headless capability. There is no scheduler/background worker/push trigger or user-facing chat/history surface yet.
+
 #### Cross-store crash model
 
 Room and Android Keystore are separate durability systems and are not treated as a distributed transaction.
@@ -118,13 +121,27 @@ The server's ciphertext history remains a transition-state delivery/replay mecha
 
 Slice 9 implements **local durable message state and reconciliation**, not the final Companion history protocol, server retention policy, backup/restore, or a user-facing history experience.
 
+### Slice 10 — Existing-device Companion approval and recovery UX
+
+Slice 10 adds the Android-side UX/state boundary for server-defined device approval and recovery:
+
+- Pending enrollment is surfaced with a manual **Check status** action. Android re-queries GET /api/e2ee/devices rather than polling.
+- An ACTIVE-bound device can list pending devices and approve one through the existing approval endpoint. A pending/unbound device never exposes approval controls.
+- A server-revoked pending device converges to a distinct denied state. The user can explicitly start a fresh enrollment; the old device identity is not silently reused as a new attempt.
+- Recovery accepts a code only transiently and offers two explicit server-supported paths: bind the session to an existing ACTIVE device, or recover-enroll a new device.
+- Bind adopts server device state without receiving private key material. If the installation has no local crypto handles, the UI reports **Device bound** rather than falsely claiming full messaging readiness. Messaging paths retain their fail-closed missing-key guards; the recovery-as-new path is the route to create local messaging keys.
+- Recovery enrollment creates new local crypto material through the existing enrollment path and then uploads the existing 100-OTPK bootstrap batch. Recovery-code rotation is not implemented.
+- Approval/recovery outcomes are converged through authoritative device listing; no blind retry, background polling, push, or realtime mechanism was introduced.
+
+The Slice 10 authenticated server round-trip was not completed in the development environment because no safe test credentials were available. The Android implementation is covered by contract/unit/UI tests and unauthenticated/TLS checks; no server state was mutated for validation.
+
 ## Not implemented
 
 - User-facing chat UI and conversation/history presentation.
 - WebSocket/STOMP realtime integration.
 - Background mailbox polling or push notification handling.
 - Automatic/background access-token refresh beyond launch-time restoration; no generic 401 middleware.
-- Enrollment beyond first-device bootstrap: Companion approval UI, recovery enrollment/entry/rotation, and revocation UX.
+- Recovery-code rotation and any broader device-revocation UX beyond the existing denied/pending convergence path.
 - OTPK replenishment and Kyber rotation.
 - Identity verification/fingerprint UI and a user-facing trust-state machine.
 - Primary-to-Companion history synchronization.

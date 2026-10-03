@@ -4,7 +4,7 @@ This document describes the Android client's actual security posture, not the se
 
 ## Implemented now
 
-The Android application through Slice 9 has:
+The Android application through Slice 10 has:
 
 - HTTPS-only login/refresh/logout plus existing E2EE device, directory/claim, message-submission, mailbox-fetch/ack, history, and cursor calls;
 - no WebSocket/realtime integration, background mailbox polling, or push delivery;
@@ -25,6 +25,11 @@ The Android application through Slice 9 has:
 - unknown inbound `senderDeviceId` entries do not trigger discovery, OTPK claims, or session creation;
 - shared per-remote-device locking prevents concurrent outbound/inbound mutation of one Signal SessionRecord;
 - bounded, headless history/cursor reconciliation with contiguous-only cursor advancement;
+- server-defined Companion approval and recovery UX with manual device-state re-query and no background polling;
+- recovery codes held only transiently during recovery actions and cleared after attempts/leaving the recovery surface;
+- recovery bind requests that carry no private key material;
+- explicit qualification of handle-less bound-device state: server session/device binding may succeed while local messaging remains unavailable until local crypto material exists;
+- fail-closed messaging guards for adopted devices without local crypto handles;
 - no message content is logged or stored in the Room database in plaintext.
 
 ### Durable message-state invariant
@@ -83,7 +88,10 @@ Kyber last-resort material remains durable by design. The adapter's process-scop
 - The server assigns PRIMARY/COMPANION roles; Android must never self-declare a role.
 - Private keys are generated and retained on the client; private keys are never sent to the server.
 - Enrollment uncertain outcomes reconcile against server device state and never regenerate identity merely because a request failed.
-- Recovery codes remain display-once transients.
+- Recovery codes remain display-once/transient values and are never persisted.
+- Approval is only exposed from an ACTIVE-bound device; Android does not self-authorize approval.
+- Pending denial is represented by server revocation and converges through authoritative device listing.
+- Recovery bind adopts an existing server device without accepting private key material; recover-enroll is the path that creates new local private material.
 - Outbound session establishment verifies signed-prekey and Kyber signatures locally, pins the remote identity, and fails closed on identity/session-state mismatch.
 - A claimed OTPK is never reused after a failed post-claim establishment attempt.
 - Inbound processing must persist the mutated Signal SessionRecord and sealed message content before acknowledging the mailbox entry.
@@ -107,4 +115,5 @@ Not yet implemented/locked:
 - push-notification security/privacy design;
 - final server retention/liveness policies;
 - Primary-to-Companion history-sync security/protocol design;
+- recovery-code rotation;
 - AGPL-3.0-only libsignal distribution decision.
