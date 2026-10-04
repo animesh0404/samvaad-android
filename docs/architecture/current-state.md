@@ -1,6 +1,6 @@
 # Architecture Current State
 
-Date: 2026-10-03.
+Date: 2026-10-04.
 
 This document describes the Android repository as it exists now. It does not describe future architecture as implemented behavior.
 
@@ -162,11 +162,56 @@ Slice 11 turns the existing durable message-state boundary into a user-facing Pr
 - The conversation list/detail surfaces can render durable sealed message content without a network call after process restart.
 - Room remains the local source of truth for presentation; server history remains reconciliation/replay input.
 - Slice 11 does not add background polling, push, WebSocket/STOMP, Primary-to-Companion history sync, server retention/eviction, backup/restore, or new server endpoints.
-## Slice 12 — protocol frozen, implementation not started
+## Slice 12 — Primary-to-Companion history synchronization
 
-- ADR 0026 (PROPOSED) freezes the candidate Primary-to-Companion history-sync protocol: Companion-initiated manual pull over a minimal server-mediated opaque pending-set with prefix ACK, Primary-authoritative history, existing per-device Signal sessions, no new crypto, no Room migration.
-- Nothing in this section is implemented: no sync endpoints, entities, DTOs, coordinators, or UI exist in code. The Implemented list above is unchanged.
-- Server ADR 0025 remains authoritative for Primary-owned history; ADR 0026 proposes the sync wire contract for acceptance.
+Slice 12 implements the frozen Primary-to-Companion history-sync protocol from ADR 0026.
+
+### Server foundation
+
+The server now provides the opaque pending-set and receipt foundation used by Android:
+
+- `POST /api/e2ee/sync-history/batches` for Primary upload;
+- `GET /api/e2ee/sync-history/batches` for Companion range fetch;
+- `POST /api/e2ee/sync-history/ack` for prefix acknowledgment.
+
+The server authorizes each operation from the session-bound device and current server-assigned role. Upload requires an ACTIVE PRIMARY targeting an ACTIVE same-user COMPANION; fetch and ACK require the ACTIVE COMPANION. Conversation participation and current authorization are revalidated per operation.
+
+Pending items are opaque server-side rows keyed by Companion, conversation, and sequence. Global `syncBatchId` receipts survive item eviction for idempotent replay and conflict detection. Upload is whole-batch atomic; overlapping identical items converge, while sequence/message conflicts fail with `409`. Pending items and receipts use the implemented seven-day lazy TTL policy. No server plaintext processing, sync cursor, batch container, succession, liveness, push, or background scheduler was introduced.
+
+### Android Primary export
+
+An ACTIVE PRIMARY can manually and boundedly export durable local history to ACTIVE Companions.
+
+The Primary:
+
+1. derives the conversation frontier from the highest contiguous durable Room sequence;
+2. reads durable messages in server-sequence order;
+3. opens sealed message content only in memory;
+4. binds conversation/message/sequence/original-device metadata and the export frontier into the versioned encrypted sync payload;
+5. encrypts through the existing Primary→Companion Signal session;
+6. uploads bounded single-conversation batches with a stable `syncBatchId` for transport retry.
+
+The Primary has no separate export store or export cursor. Room remains the durable history authority.
+
+### Android Companion import
+
+An ACTIVE COMPANION manually fetches pending ranges and decrypts them through the existing Signal/session infrastructure.
+
+The sync ingest path resolves the exporting Primary session separately from the historical message's original `senderDeviceId`. The original sender/recipient metadata is preserved verbatim in the durable Room row.
+
+Synced messages use the existing message model as inbound durable history state. Plaintext is sealed before persistence, and ACK is sent only through the highest contiguous locally durable sequence. Duplicate delivery, gaps, transport failure, and crash/restart converge through the existing durable-state and idempotent retry model.
+
+The Companion stores `lastSeenFrontier` in the existing no-backup metadata-store pattern. Room contiguity remains authoritative for ACK safety; metadata can never advance the durable position by itself. A frontier regression is surfaced as an anomaly rather than silently accepted.
+
+### Trigger and concurrency
+
+History synchronization is attached to the existing manual Sync action. There is no new screen, scheduler, background worker, push trigger, realtime transport, or demand channel.
+
+`SessionDeviceLocks` serializes Primary→Companion Signal session mutation with existing messaging paths. Multiple conversations and Companions remain independently bounded.
+
+### Current boundary
+
+Slice 12 does not implement backup/restore, server retention policy, Primary succession, liveness expiry, push/background synchronization, or Web Companion behavior. The server remains blind to history plaintext and the encrypted frontier.
 ## Not implemented
 
 - WebSocket/STOMP realtime integration.
@@ -186,8 +231,8 @@ Slice 11 turns the existing durable message-state boundary into a user-facing Pr
 
 The current public server implementation baseline is:
 
-`164463da10505c2b789556e02536e2f1e8701cf5`
-(`feat: enforce primary and companion device roles`).
+`cbd87053d788cd44c73be9f3d3441f18c04ce88e`
+(`fix: harden primary-to-companion history sync`).
 
 The server has implemented:
 
