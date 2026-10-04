@@ -162,6 +162,11 @@ Slice 11 turns the existing durable message-state boundary into a user-facing Pr
 - The conversation list/detail surfaces can render durable sealed message content without a network call after process restart.
 - Room remains the local source of truth for presentation; server history remains reconciliation/replay input.
 - Slice 11 does not add background polling, push, WebSocket/STOMP, Primary-to-Companion history sync, server retention/eviction, backup/restore, or new server endpoints.
+## Slice 12 — protocol frozen, implementation not started
+
+- ADR 0026 (PROPOSED) freezes the candidate Primary-to-Companion history-sync protocol: Companion-initiated manual pull over a minimal server-mediated opaque pending-set with prefix ACK, Primary-authoritative history, existing per-device Signal sessions, no new crypto, no Room migration.
+- Nothing in this section is implemented: no sync endpoints, entities, DTOs, coordinators, or UI exist in code. The Implemented list above is unchanged.
+- Server ADR 0025 remains authoritative for Primary-owned history; ADR 0026 proposes the sync wire contract for acceptance.
 ## Not implemented
 
 - WebSocket/STOMP realtime integration.

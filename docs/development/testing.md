@@ -123,3 +123,7 @@ The Primary conversation/history presentation implementation was committed as `5
 - UI tests cover empty state, offline durable rendering, detail/back navigation, sync failure preservation, sync loading, explicit recipient-device selection, send-and-render flow, duplicate-tap single-flight behavior, restart rendering without network, handle-less bound-device fail-closed presentation, and sealed-content failure placeholder behavior.
 - Slice 11 uses fake APIs for UI/host integration tests; no authenticated live-server round-trip was added or required.
 - The checkpoint contains implementation/test changes only; documentation reconciliation is this separate single docs commit.
+
+### Slice 12 design freeze
+
+No Slice 12 implementation exists, so no implementation tests were added. Completed design-review evidence: architecture audit, threat-model challenge, two protocol-completeness reviews, ADR + server-contract design, and final contract-hardening review, all against the frozen candidate protocol (ADR 0026, PROPOSED). Implementation tests — server contract tests, Primary export tests, Companion ingest tests, crash-matrix restart tests, revocation-race tests, frontier tests — are future work tied to the implementation slices. Existing Slice 11/TLS test status is unchanged.

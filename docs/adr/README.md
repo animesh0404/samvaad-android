@@ -19,6 +19,7 @@ Conventions: `NNNN-short-title.md` with Status / Context / Decision / Consequenc
 | [0009](0009-durable-message-state-and-reconciliation.md) | Durable message state and history/cursor reconciliation |
 | [0010](0010-companion-approval-and-recovery-ux.md) | Existing-device Companion approval and recovery UX |
 | [0011](0011-primary-conversation-history-presentation.md) | Primary conversation/history presentation and behavior |
+| [0026](0026-primary-to-companion-history-synchronization.md) | Primary-to-Companion history synchronization protocol (PROPOSED, not implemented) |
 
 ## Authority boundary
 

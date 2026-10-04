@@ -106,3 +106,15 @@ Slice 11 required **no server implementation changes**.
 The Android checkpoint `5b74e71dab514c88427617346a2cd800cfc4cabb` consumes the already-integrated history/cursor, recipient-directory, session-establishment, and ciphertext-submission contracts. The new work is presentation/wiring on the Android side: Room-backed conversation/history rendering, manual invocation of the existing bounded reconciliation sweep, and reuse of the existing send/session boundaries.
 
 No Android-specific endpoint was introduced. Slice 11 does not define server retention/eviction, realtime/push transport, Primary-to-Companion history synchronization, backup/restore, or any new message protocol.
+
+## Slice 12 design freeze (no server changes)
+
+Slice 12 protocol work required **no server implementation changes**.
+
+Android ADR 0026 proposes the Primary-to-Companion history-sync protocol, but no sync endpoints currently exist in server code. In particular, the following are **proposed by ADR 0026 and not yet implemented** — they must not be treated as available contracts:
+
+- `POST /api/e2ee/sync-history/batches`
+- `GET /api/e2ee/sync-history/batches`
+- `POST /api/e2ee/sync-history/ack`
+
+The existing server baseline above is unchanged: the consumed contracts remain authentication, enrollment, directory/claim, message submission, mailbox fetch/ack, conversation history reads, and synchronization-cursor reads/advancement, plus the approval/recovery contracts. Server retention/eviction, liveness, succession, and backup remain deferred.

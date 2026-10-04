@@ -146,7 +146,9 @@ DONE.
 
 ### Slice 12 — Primary-to-Companion history synchronization
 
-Implement only after the server-side Primary-to-Companion history-sync protocol is defined and accepted. Do not invent the wire protocol in Android.
+Protocol frozen / ADR proposed — implementation pending.
+
+ADR 0026 proposes the Primary-to-Companion history-sync protocol (Companion-initiated manual pull over a minimal server-mediated opaque pending-set with prefix ACK; Primary-authoritative history; no new crypto; no Room migration). The protocol is accepted as a design direction and frozen as a candidate; Slice 12 implementation has NOT started, the server has NOT changed, and no sync endpoints exist in code. The next step is the actual Slice 12 implementation against the frozen protocol. Do not invent protocol details beyond ADR 0026.
 
 ## Subsequent planned slices
 

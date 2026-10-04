@@ -107,6 +107,18 @@ Kyber last-resort material remains durable by design. The adapter's process-scop
 
 The generated manifest references Android backup-rule resources that remain template placeholders. Sensitive crypto state and message-state files are stored under `getNoBackupFilesDir()` plus the Keystore-held wrapping key. Backup-rule/release hardening for any future backed-up data remains deferred; revisit before introducing any backup/export feature.
 
+## Proposed Slice 12 security model (ADR 0026, PROPOSED — not implemented)
+
+The frozen candidate protocol, when implemented, must hold these properties (design intent only; none is enforced in code yet):
+
+- Primary-authoritative history: the Companion accepts history as authenticated assertions from its currently-authorized Primary; original-sender authenticity is intentionally not independently reproduced.
+- Primary→Companion Signal session confidentiality with mutual identity pinning; no new crypto primitive.
+- Server-blind ciphertext, including the encrypted per-conversation export frontier.
+- Whole-batch atomic conflict rejection (409 on sequence/message divergence) so the server cannot silently substitute conflicting data.
+- Revocation checked on every sync operation; no trust in client-declared roles; per-request server role truth.
+- No gap markers: missing history stays visible as pending/anomaly, never normalized into success.
+- No plaintext server processing at any point.
+
 ## Deferred security architecture
 
 Not yet implemented/locked:

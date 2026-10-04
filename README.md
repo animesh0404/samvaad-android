@@ -43,7 +43,7 @@ This baseline enforces server-assigned device roles: one non-revoked PRIMARY and
 
 The server already has E2EE device/enrollment, prekey/recovery, recipient-device discovery, OTPK claim, ciphertext transport, mailbox, history, synchronization-cursor, and device-level realtime foundations. Android currently consumes authentication, enrollment, recipient discovery, OTPK claim, ciphertext submission, mailbox fetch, mailbox acknowledgment, conversation history, synchronization-cursor read/write, and the existing device approval/recovery contracts. Slice 11 now presents the durable local message state through a user-facing conversation list/detail surface. Manual Sync invokes the existing bounded reconciliation sweep. There is still no scheduler, background worker, push trigger, or realtime transport.
 
-The server's durable ciphertext history is a **transition state**. The target architecture makes the Android Primary the durable history authority and uses the server as a bounded delivery/replay layer. Retention/eviction and the Primary-to-Companion history-sync protocol are not yet locked.
+The server's durable ciphertext history is a **transition state**. The target architecture makes the Android Primary the durable history authority and uses the server as a bounded delivery/replay layer. Server retention/eviction remains unlocked; the Primary-to-Companion history-sync protocol is frozen as a design candidate in ADR 0026 (PROPOSED — no implementation, no server endpoints in code).
 
 Field-level contracts remain in the server repository; this Android repository intentionally does not duplicate them.
 
