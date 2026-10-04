@@ -80,6 +80,11 @@ dependencies {
     // AGPL-3.0-only: local spike only, NOT a distribution artifact.
     implementation(libs.libsignal.android)
     implementation(libs.libsignal.client)
+    // Slice 13: foreground realtime inbound only. Minimal RFC 6455 client;
+    // STOMP framing is hand-rolled in-session code (no SEND contract
+    // exists server-side). Default SSL factory only: platform trust
+    // (debug Network Security Config anchor) applies untouched.
+    implementation(libs.java.websocket)
     // Slice 9 Step 1: durable message/conversation/cursor facts. Room holds
     // message metadata + opaque/sealed BLOBs only — never private key
     // material or SessionRecords (those stay in the Keystore vault).

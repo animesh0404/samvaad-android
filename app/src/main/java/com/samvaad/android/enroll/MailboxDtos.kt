@@ -1,5 +1,7 @@
 package com.samvaad.android.enroll
 
+import org.json.JSONObject
+
 /**
  * Mailbox DTOs (slice: inbound mailbox consumption + Signal decryption).
  *
@@ -23,4 +25,22 @@ data class MailboxItem(
     val envelopeType: String,
     val ciphertextBase64: String,
     val serverTimestamp: String,
+)
+
+/**
+ * Shared wire parser for one ciphertext item. Used by the mailbox HTTP
+ * fetch and by realtime STOMP MESSAGE bodies alike: the server emits the
+ * identical `E2eeCiphertextItemDto` shape on both transports, so a second
+ * parser would be a second source of truth. Throws `JSONException` on
+ * malformed input; callers fail closed without ACKing.
+ */
+internal fun parseMailboxItem(json: JSONObject): MailboxItem = MailboxItem(
+    messageId = json.getString("messageId"),
+    conversationId = json.getString("conversationId"),
+    sequenceNumber = json.getLong("sequenceNumber"),
+    senderUserId = json.getString("senderUserId"),
+    senderDeviceId = json.getString("senderDeviceId"),
+    envelopeType = json.getString("envelopeType"),
+    ciphertextBase64 = json.getString("ciphertext"),
+    serverTimestamp = json.getString("serverTimestamp"),
 )

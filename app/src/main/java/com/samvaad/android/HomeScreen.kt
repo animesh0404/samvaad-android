@@ -17,6 +17,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -58,6 +59,7 @@ import com.samvaad.android.session.FileSyncMetadataStore
 import com.samvaad.android.session.HistorySyncCoordinator
 import com.samvaad.android.session.InboxProcessor
 import com.samvaad.android.session.MessageSender
+import com.samvaad.android.session.RealtimeInbox
 import com.samvaad.android.session.ReconciliationSweep
 import com.samvaad.android.session.SendResult
 import com.samvaad.android.session.SessionDeviceLocks
@@ -171,6 +173,10 @@ private class MessagingGraph(
     val establisher: SessionEstablisher,
     val sweep: ReconciliationSweep,
     val historySync: HistorySyncCoordinator,
+    /** Separate inbox sharing the graph locks/db: realtime ingest seam. */
+    val rtInbox: InboxProcessor,
+    /** Foreground-only socket: started after a clean sweep, never alone. */
+    val realtime: RealtimeInbox,
 )
 
 @Composable
@@ -195,6 +201,15 @@ fun HomeScreen(
     deviceApi: E2eeDeviceApi? = null,
     wrappingKeys: WrappingKeyProvider? = null,
     onLogout: () -> Unit = {},
+    /**
+     * Test seam for the Slice 13 realtime socket. Production passes null
+     * and gets the default WebSocket factory (platform TLS, no custom
+     * trust). Kept explicit/nullable like the other seams (no DI).
+     */
+    realtimeSocketFactory: ((
+        java.net.URI,
+        RealtimeInbox.SocketEvents,
+    ) -> RealtimeInbox.RealtimeSocket)? = null,
 ) {
     val context = LocalContext.current.applicationContext
     // Explicit construction (no DI): one coordinator per composition.
@@ -226,6 +241,16 @@ fun HomeScreen(
     val submitting = remember { AtomicBoolean(false) }
     val loggingOut = remember { AtomicBoolean(false) }
     val scope = rememberCoroutineScope()
+    // Slice 13 socket, declared early so doLogout (below) can stop it
+    // before server revocation even though the messaging graph (which
+    // also holds it) is built further down. Rotation-safe via remember.
+    val foregroundRealtime = remember(realtimeSocketFactory) {
+        if (realtimeSocketFactory != null) {
+            RealtimeInbox(socketFactory = realtimeSocketFactory, parentScope = scope)
+        } else {
+            RealtimeInbox(parentScope = scope)
+        }
+    }
     // Recovery code: transient Compose state only. Cleared after every
     // attempt and whenever the recovery surface is left; never persisted,
     // never logged, never placed into navigation state.
@@ -293,6 +318,10 @@ fun HomeScreen(
         if (!loggingOut.compareAndSet(false, true)) return
         scope.launch {
             try {
+                // Realtime first: the socket must be gone before server
+                // revocation tears it down (which would otherwise read as
+                // a revocation event on a dying session).
+                foregroundRealtime.stop()
                 sessionStore?.let { SessionRefresher(authApi, it).logout(serverAddress, session) }
             } finally {
                 loggingOut.set(false)
@@ -512,7 +541,31 @@ fun HomeScreen(
                 contentSealer = sealer,
                 syncMetadata = FileSyncMetadataStore(context),
             ),
+            // Separate realtime inbox sharing the graph locks/db/vaults:
+            // sweep internals stay untouched; races converge on the same
+            // durable rows and the same per-device lock holder.
+            rtInbox = InboxProcessor(
+                api = api,
+                localMetadata = deviceMeta,
+                sessions = sessionMeta,
+                adapter = adapter,
+                cryptoVault = cryptoVault,
+                sessionVault = sessionVault,
+                deviceLocks = locks,
+                db = db,
+                contentSealer = sealer,
+            ),
+            // Same socket instance owned early (see foregroundRealtime):
+            // the graph references it but never owns its lifecycle.
+            realtime = foregroundRealtime,
         )
+    }
+
+    // Foreground scope exit: the realtime socket never outlives the
+    // messaging graph it belongs to (rotation-safe: remember survives
+    // rotation, so this fires only when Home actually leaves).
+    DisposableEffect(messaging) {
+        onDispose { messaging.realtime.stop() }
     }
 
     var selectedConversationId by rememberSaveable { mutableStateOf<String?>(null) }
@@ -629,6 +682,64 @@ fun HomeScreen(
         detailLoadError = null
     }
 
+    /**
+     * Slice 13 foreground realtime: idempotent ensure-started called only
+     * after a clean sweep. The subscribed device is the adopted bound
+     * device id (never user-selected); the server enforces the exact
+     * subscription match regardless. Unenrolled/handle-less installs
+     * never subscribe.
+     */
+    fun ensureRealtime() {
+        val deviceId = bootstrap.adoptedSummary()?.deviceId
+        if (deviceId.isNullOrBlank()) return
+        val callbacks = object : RealtimeInbox.Callbacks {
+            override suspend fun onItem(item: com.samvaad.android.enroll.MailboxItem) {
+                try {
+                    messaging.rtInbox.receiveOne(session, serverAddress, item)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (_: Exception) {
+                    // Ingest failure stays local: the mailbox row remains
+                    // and the next sweep recovers it.
+                }
+                loadConversations()
+                selectedConversationId?.let { loadDetail(it) }
+            }
+
+            override suspend fun refreshSession(): AuthSession? {
+                val store = sessionStore ?: return null
+                return when (
+                    val restored = SessionRefresher(authApi, store).restoreSession()
+                ) {
+                    is SessionRefresher.RestoreOutcome.Authenticated -> restored.session
+                    else -> null
+                }
+            }
+
+            override fun onStopped(reason: RealtimeInbox.StopReason) {
+                scope.launch {
+                    when (reason) {
+                        // Session is dead: converge to login via the
+                        // existing logout routing (no server call needed).
+                        RealtimeInbox.StopReason.AuthExhausted -> onLogout()
+                        // Device state changed: re-query authoritative
+                        // state so denied/revoked UX stays authoritative.
+                        RealtimeInbox.StopReason.Revoked -> refreshApproval()
+                        // Transport budget spent: manual Sync remains and
+                        // re-ensures realtime on its next clean run.
+                        RealtimeInbox.StopReason.AttemptsExhausted -> Unit
+                    }
+                }
+            }
+        }
+        try {
+            messaging.realtime.start(session, serverAddress, deviceId, callbacks)
+        } catch (_: IllegalArgumentException) {
+            // Invalid address/device programming error guard: realtime
+            // stays down; manual Sync remains fully functional.
+        }
+    }
+
     fun sync() {
         // Main-thread guard like the approval taps: at most one sweep runs.
         if (syncing) return
@@ -646,6 +757,11 @@ fun HomeScreen(
                 if (syncError == null) {
                     val history = messaging.historySync.sync(session, serverAddress, identifier)
                     syncError = history.error
+                }
+                if (syncError == null) {
+                    // Sweep-before-subscribe: realtime starts only on a
+                    // clean sweep so the live stream only adds new items.
+                    ensureRealtime()
                 }
                 loadConversations()
                 selectedConversationId?.let { loadDetail(it) }

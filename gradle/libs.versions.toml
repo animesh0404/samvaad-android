@@ -13,6 +13,7 @@ room = "2.7.1"
 composeBom = "2026.02.01"
 libsignal = "0.86.5"
 desugar = "2.1.5"
+javaWebsocket = "1.5.7"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -35,6 +36,11 @@ androidx-room-ktx = { group = "androidx.room", name = "room-ktx", version.ref = 
 androidx-room-compiler = { group = "androidx.room", name = "room-compiler", version.ref = "room" }
 libsignal-android = { group = "org.signal", name = "libsignal-android", version.ref = "libsignal" }
 libsignal-client = { group = "org.signal", name = "libsignal-client", version.ref = "libsignal" }
+# Slice 13: minimal RFC 6455 client for foreground STOMP realtime inbound.
+# Java 7 bytecode, one inert transitive (slf4j-api, no binding on
+# Android). wss uses the platform default SSLSocketFactory, so the
+# debug Network Security Config anchor applies with no custom TLS code.
+java-websocket = { group = "org.java-websocket", name = "Java-WebSocket", version.ref = "javaWebsocket" }
 desugar-jdk-libs = { group = "com.android.tools", name = "desugar_jdk_libs", version.ref = "desugar" }
 
 [plugins]

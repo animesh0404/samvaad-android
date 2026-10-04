@@ -308,16 +308,8 @@ class HttpE2eeDeviceApi(
         }
     }
 
-    private fun parseMailboxItem(json: JSONObject): MailboxItem = MailboxItem(
-        messageId = json.getString("messageId"),
-        conversationId = json.getString("conversationId"),
-        sequenceNumber = json.getLong("sequenceNumber"),
-        senderUserId = json.getString("senderUserId"),
-        senderDeviceId = json.getString("senderDeviceId"),
-        envelopeType = json.getString("envelopeType"),
-        ciphertextBase64 = json.getString("ciphertext"),
-        serverTimestamp = json.getString("serverTimestamp"),
-    )
+    private fun parseMailboxItem(json: JSONObject): MailboxItem =
+        com.samvaad.android.enroll.parseMailboxItem(json)
 
     /**
      * Mailbox-fetch classifier. The server answers 200 (including `[]`

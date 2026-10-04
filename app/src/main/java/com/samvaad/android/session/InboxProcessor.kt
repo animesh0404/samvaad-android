@@ -99,11 +99,39 @@ class InboxProcessor(
         return InboxResult.Completed(messages, acked, unacked, skipped)
     }
 
+    /**
+     * Ingest ONE realtime item through the exact same durable pipeline as
+     * mailbox reconciliation ([processOne], unchanged): gate → session
+     * lookup → locked decrypt/seal/store → ACK. Realtime delivery is a
+     * hint, never an ACK: every outcome maps 1:1 from the mailbox path,
+     * including duplicate convergence and unacked redelivery. Transport
+     * failures propagate exactly as they do from [receive].
+     */
+    suspend fun receiveOne(
+        session: AuthSession,
+        serverAddress: String,
+        item: MailboxItem,
+    ): RealtimeEntryResult = when (val outcome = processOne(session, serverAddress, item)) {
+        is EntryOutcome.Decrypted -> RealtimeEntryResult.Decrypted(item.messageId)
+        is EntryOutcome.Duplicate -> RealtimeEntryResult.Duplicate(item.messageId)
+        is EntryOutcome.Skipped -> RealtimeEntryResult.Skipped(item.messageId, outcome.reason)
+        is EntryOutcome.DeliveredUnacked ->
+            RealtimeEntryResult.Failed(item.messageId, "unacked")
+    }
+
     private sealed interface EntryOutcome {
         data class Decrypted(val message: InboxMessage) : EntryOutcome
         data class DeliveredUnacked(val message: InboxMessage) : EntryOutcome
         data object Duplicate : EntryOutcome
         data class Skipped(val reason: String) : EntryOutcome
+    }
+
+    /** Public outcome of [receiveOne]; mirrors [EntryOutcome] 1:1. */
+    sealed interface RealtimeEntryResult {
+        data class Decrypted(val messageId: String) : RealtimeEntryResult
+        data class Duplicate(val messageId: String) : RealtimeEntryResult
+        data class Skipped(val messageId: String, val reason: String) : RealtimeEntryResult
+        data class Failed(val messageId: String, val kind: String) : RealtimeEntryResult
     }
 
     private sealed interface GateOutcome {
