@@ -4,7 +4,7 @@ This document describes the Android client's actual security posture, not the se
 
 ## Implemented now
 
-The Android application through Slice 11 has:
+The Android application through Slice 12 has:
 
 - HTTPS-only login/refresh/logout plus existing E2EE device, directory/claim, message-submission, mailbox-fetch/ack, history, and cursor calls;
 - no WebSocket/realtime integration, background mailbox polling, or push delivery;
@@ -107,17 +107,20 @@ Kyber last-resort material remains durable by design. The adapter's process-scop
 
 The generated manifest references Android backup-rule resources that remain template placeholders. Sensitive crypto state and message-state files are stored under `getNoBackupFilesDir()` plus the Keystore-held wrapping key. Backup-rule/release hardening for any future backed-up data remains deferred; revisit before introducing any backup/export feature.
 
-## Proposed Slice 12 security model (ADR 0026, PROPOSED — not implemented)
+## Implemented Slice 12 security model
 
-The frozen candidate protocol, when implemented, must hold these properties (design intent only; none is enforced in code yet):
+ADR 0026 is now implemented. The enforced properties are:
 
-- Primary-authoritative history: the Companion accepts history as authenticated assertions from its currently-authorized Primary; original-sender authenticity is intentionally not independently reproduced.
+- Primary-authoritative history: the Companion accepts history as authenticated assertions from its currently-authorized Primary; original-sender authenticity is not independently reproduced.
 - Primary→Companion Signal session confidentiality with mutual identity pinning; no new crypto primitive.
 - Server-blind ciphertext, including the encrypted per-conversation export frontier.
-- Whole-batch atomic conflict rejection (409 on sequence/message divergence) so the server cannot silently substitute conflicting data.
-- Revocation checked on every sync operation; no trust in client-declared roles; per-request server role truth.
-- No gap markers: missing history stays visible as pending/anomaly, never normalized into success.
-- No plaintext server processing at any point.
+- Whole-batch atomic conflict rejection on sequence/message divergence.
+- Revocation and role checks on every sync operation; no trust in client-declared roles.
+- No gap markers: missing history remains pending/anomalous rather than being normalized into success.
+- Plaintext is never processed by the server.
+- Room durable contiguity is the only authority for safe Companion ACK advancement.
+- Sync metadata is advisory state and cannot cause a sequence skip.
+- Batch retry, duplicate ingest, and ACK retry converge without re-delivering plaintext.
 
 ## Deferred security architecture
 
@@ -130,6 +133,5 @@ Not yet implemented/locked:
 - user-facing message/history access-control and deletion/retention policy;
 - push-notification security/privacy design;
 - final server retention/liveness policies;
-- Primary-to-Companion history-sync security/protocol design;
 - recovery-code rotation;
 - AGPL-3.0-only libsignal distribution decision.

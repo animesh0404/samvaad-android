@@ -142,13 +142,23 @@ DONE.
 - Empty, loading, error, partial-sync, offline/restart, and handle-less Device bound states are covered by UI tests.
 - Slice 11 added no server endpoint, persistence mechanism, cryptographic primitive, realtime transport, or background worker.
 
-## Next
+## Completed
 
 ### Slice 12 — Primary-to-Companion history synchronization
 
-Protocol frozen / ADR proposed — implementation pending.
+DONE.
 
-ADR 0026 proposes the Primary-to-Companion history-sync protocol (Companion-initiated manual pull over a minimal server-mediated opaque pending-set with prefix ACK; Primary-authoritative history; no new crypto; no Room migration). The protocol is accepted as a design direction and frozen as a candidate; Slice 12 implementation has NOT started, the server has NOT changed, and no sync endpoints exist in code. The next step is the actual Slice 12 implementation against the frozen protocol. Do not invent protocol details beyond ADR 0026.
+- ADR 0026 is now the accepted/implemented Primary-to-Companion history-sync protocol.
+- Server foundation and hardening are implemented and pushed through `cbd8705`.
+- Android implementation is checkpointed and pushed as `c4ab2da`.
+- Primary export is manual, bounded, Room-authoritative, and encrypted through the existing Primary→Companion Signal session.
+- Companion import is manual, bounded, durably sealed in Room, and ACKed only through locally contiguous durable state.
+- The existing no-backup metadata-store pattern holds `lastSeenFrontier`; Room contiguity remains authoritative for ACK safety.
+- Existing SessionDeviceLocks, MessageContentSealer, InboxProcessor, and SessionEstablisher boundaries are reused.
+- No Room migration, new crypto primitive, new message store, background worker, push, or realtime transport was introduced.
+- Server sync uses opaque pending items, global batch receipts, whole-batch conflict handling, lazy seven-day TTL, and prefix ACK.
+- Final validation: Android unit `446/446`, emulator `29/29`, physical Pixel 6a `29/29`, debug/test/release builds successful.
+- The physical Pixel 6a can install and launch the app; LAN login remains blocked by the previously identified environmental TCP/network issue.
 
 ## Subsequent planned slices
 
@@ -160,7 +170,6 @@ These are sequencing directions, not permission to implement future protocol det
 
 - exact server ciphertext-buffer retention/eviction policy;
 - final Primary/Companion liveness/expiry policy;
-- Primary-to-Companion history-sync wire protocol;
 - encrypted backup/restore design;
 - push notification design;
 - group E2EE / MLS;
