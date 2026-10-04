@@ -2,114 +2,137 @@
 
 ## Status
 
-PROPOSED. Not accepted, not implemented.
+ACCEPTED / IMPLEMENTED.
 
-Server ADR 0025 remains authoritative for Primary-owned durable history and device roles. This ADR proposes (it does not define or redefine) the wire protocol, authorization composition, and client behavior for synchronizing Primary history to Companion devices. The server contract it describes does not exist in code. Nothing here may be read as already implemented.
+Server ADR 0025 remains authoritative for Primary-owned durable history and device roles. This ADR records the protocol frozen during Slice 12 design review and now implemented by the server and Android Primary/Companion paths.
 
 ## Context
 
-Server ADR 0025 establishes the Android Primary as the authoritative source for durable conversation history and directs newly enrolled Companions to receive older history through an E2EE synchronization path, but explicitly leaves the history-sync wire protocol open. The current server exposes device enrollment/approval/recovery, per-device ciphertext transport (submit, mailbox, history replay, cursors), and role enforcement — and nothing for same-user device-to-device history transfer; same-user message submission is deliberately forbidden. Slice 12 passed an architecture audit, a threat-model challenge, two completeness reviews, and a contract-hardening review. This ADR freezes the resulting candidate protocol for review.
-
-## Problem
-
-A newly enrolled Companion has no authorized path to the Primary's durable history, and no defined wire format, cursor, idempotency, authorization composition, or crash model exists for transferring it without weakening E2EE, turning the server into a backup, or inventing device succession.
+Server ADR 0025 establishes the Android Primary as the authoritative source for durable conversation history and directs newly enrolled Companions to receive older history through an E2EE synchronization path. Slice 12 completed the protocol audit, threat-model challenge, completeness reviews, contract hardening, server foundation, server hardening, and Android implementation.
 
 ## Decision
 
-Synchronize history as Companion-initiated manual pull over a minimal server-mediated opaque pending-set with prefix ACK, reusing existing per-device Signal sessions, with the Primary as the asserted authority (not the original senders), and no new crypto, no Room migration, and no background or push machinery.
+Synchronize history as Companion-initiated manual pull over a minimal server-mediated opaque pending-set with prefix ACK, reusing existing per-device Signal sessions, with the Primary as the asserted authority (not the original senders), and no new crypto, Room migration, background, or push machinery.
 
 ## Protocol overview
 
-The Companion pulls, during manual Sync, sequence ranges it has not yet persisted. The Primary, during its own manual sweep, opportunistically uploads idempotent batches for ACTIVE Companions. The server holds only unacknowledged opaque batches and evicts on prefix ACK (TTL backstop). The Companion ingests through the existing inbound durable-state core, persists verbatim rows, advances its durable contiguous position, and acknowledges the prefix. There is no push, no background polling, no demand channel, and no per-Companion jobs on either side.
+The Companion pulls during manual Sync. The Primary, during its own manual Sync, uploads bounded idempotent batches for ACTIVE Companions. The server holds unacknowledged opaque per-item state and independent batch receipts; acknowledged prefixes are evicted and TTL is a backstop. The Companion decrypts through the existing inbound durable-state core, persists sealed content, advances durable contiguous position, and acknowledges the prefix.
+
+There is no push, background polling, demand channel, or per-Companion job scheduler.
 
 ## Authority model
 
-The Primary device is authoritative for durable conversation history (ADR 0025). The Companion proves its Primary by reading the server-assigned `deviceRole` (never inferring); the Primary proves each Companion as a same-user ACTIVE-bound device re-read from the server per batch. Role truth is always server-side; client role hints never authorize. Revoked devices fail closed on every operation. If no non-REVOKED Primary exists, synchronization is unavailable; no succession is invented.
+The Primary is authoritative for durable conversation history. The Companion and Primary roles are server-assigned; Android never self-declares a role. Revoked devices fail closed on every sync operation. If no ACTIVE Primary exists, synchronization is unavailable; no succession is invented.
+
+The Primary's Signal identity authenticates the history transfer. It does not claim authorship of messages originally sent by another device.
 
 ## Initiation model
 
-Companion-initiated pull only, attached to the existing manual Sync entry point. Primary upload is blind and idempotent (no demand signal needed; sequence dedupe absorbs redundancy) during its own manual sweep. Offline Primary yields stale/empty results (visible pending); offline Companion leaves pending server state untouched. No coupling between the two schedules beyond eventual convergence.
+Companion-initiated pull is attached to the existing manual Sync entry point. Primary upload is blind and idempotent during its own manual sweep; sequence dedupe absorbs redundancy. Offline or stale peers leave visible pending state rather than creating a false completion signal.
 
 ## Primary export model
 
-Stream Room in server-sequence order with existing ordered queries; open each sealed BLOB transiently in memory (one item at a time, no bulk duplication); encrypt into the existing Primary→Companion Signal session; attach the per-conversation export frontier; upload. No export store and no export cursor persist on the Primary: regeneration from Room plus server-side dedupe makes restarts safe.
+The Primary streams Room in server-sequence order, computes the highest-contiguous durable frontier, opens each sealed message BLOB transiently in memory, encrypts it into the existing Primary→Companion Signal session, and uploads bounded single-conversation batches.
+
+No export store or export cursor is persisted on the Primary. Room plus server idempotency makes restart/retry safe.
 
 ## Companion pull model
 
-Fetch a sequence range for a conversation; resolve the currently-authorized Primary session (fresh directory role read, never cached past the operation); decrypt; validate the envelope; seal under the Companion vault; persist verbatim rows; recompute the durable contiguous position; prefix-ACK it. Unknown conversations, unparticipated conversations, and non-Primary senders are rejected fail-closed.
+The Companion fetches a sequence range, resolves the currently-authorized Primary session, decrypts and validates the envelope, seals the plaintext, persists the historical row, recomputes durable contiguity, and prefix-ACKs that contiguous position.
+
+The historical message's original senderDeviceId and recipientDeviceId are preserved. Sync decryption uses the Primary session because the Primary is the transfer authority.
 
 ## Server pending-set model
 
-Pending state is a set of opaque per-item rows keyed `(companionDeviceId, conversationId, sequenceNumber)` with a uniqueness constraint, plus independent batch receipts keyed by globally unique `syncBatchId`. There is no queue-head entity, no sync-cursor entity, and no batch container entity. Unacknowledged rows persist (TTL backstop); acknowledged prefixes evict; evicted-but-unacked data is regenerable from Primary Room under a new batch ID.
+Pending state is stored as opaque per-item rows keyed by Companion, conversation, and sequence, plus independent batch receipts keyed by globally unique syncBatchId. There is no queue-head entity, sync-cursor entity, or batch-container entity.
 
-## Batch identity
+Pending items are evicted by prefix ACK and protected by the implemented seven-day lazy TTL. Receipts survive item eviction for idempotent replay/conflict detection within their TTL.
 
-`syncBatchId` is a globally unique UUID per upload. Identical canonical content under the same ID replays the stored receipt; divergent content under the same ID is a `409` conflict anywhere. A batch is an upload unit only; fetch and ACK never reference batch identity after upload.
+## Batch identity and conflicts
 
-## Item identity
+syncBatchId is a globally unique UUID per upload.
 
-`messageId` is the stable message identity and is unique within the sync namespace; Companion ingest dedupes on it through the existing insert-ignore path. Server sequence is the ordering coordinate, never an identity.
+Identical canonical content under the same ID replays the stored receipt. Divergent content under the same ID returns 409.
 
-## Overlap semantics
+The server rejects:
+- same sequence with a different message;
+- same message at a different sequence;
+- same message with divergent ciphertext.
 
-Overlapping batches are allowed and absorbed by the uniqueness constraints: identical items are idempotent duplicates; the pending set is keyed by sequence, so eviction and fetch are prefix-scoped and batch-agnostic (e.g. batches 100–109 and 105–114 with ACK 107 leave exactly 108–114 pending).
+Upload is whole-batch atomic.
 
-## Conflict semantics
+## Item identity and overlap
 
-Same sequence + same messageId + same ciphertext → idempotent duplicate (receipt replay). Same sequence + different messageId, same sequence + messageId with divergent ciphertext, or same messageId at a different sequence → `409` conflict; the whole batch is rejected atomically with zero partial writes. Retrying the exact original batch replays the receipt.
+messageId is the stable message identity within the sync namespace. Server sequence is the ordering coordinate.
+
+Overlapping batches are allowed and identical overlap converges through uniqueness/idempotency constraints. Prefix ACK is independent of batch identity.
 
 ## Encryption/envelope model
 
-Each item is encrypted with the existing per-device Signal session between Primary and Companion (new envelope-type label for gating; no new primitive). The encrypted payload carries `conversationId`, `messageId`, `sequenceNumber`, original `senderDeviceId`, original `recipientDeviceId`, original `serverTimestamp`, message bytes, and the per-conversation export frontier. The server stores only opaque ciphertext plus routing metadata and stays blind, including to the frontier.
+Each item is encrypted with the existing Primary→Companion Signal session. The encrypted payload carries:
+
+- conversationId
+- messageId
+- sequenceNumber
+- original senderDeviceId
+- original recipientDeviceId
+- original serverTimestamp
+- plaintext message bytes
+- per-conversation export frontier
+- envelope version/type
+
+The server sees only routing metadata and opaque ciphertext. It does not process plaintext or the encrypted frontier.
 
 ## Frontier semantics
 
-Frontier = the Primary's `highestContiguous` durable sequence for the conversation at export, repeated per encrypted item. The Companion persists `lastSeenFrontier` beside its derived contiguous position: equal means complete-as-of-frontier, lower means pending, later-higher means sync may continue, regression is an explicit anomaly that is never silently accepted. The frontier is explicitly NOT authenticated completeness and does NOT recover history lost from Primary storage.
+The export frontier is the Primary's highest-contiguous durable Room sequence for the conversation at export time and is repeated inside each encrypted item.
 
-## Position/ACK model
+The Companion stores lastSeenFrontier in the existing no-backup metadata-store pattern. Equality means complete as-of that frontier; a lower value indicates pending work; a regression is an explicit anomaly. The frontier is not an authenticated completeness proof and cannot recover history lost from Primary storage.
 
-ACK coordinate is `(companionDeviceId, conversationId, throughSequence)`, prefix-scoped, idempotent, and independent of batch identity. The existing mailbox/history delivery cursors are never read or written for sync. The Companion's durable position derives from Room contiguity; the server's pending head derives from unacked rows. No sync-cursor entity exists.
+## Position and ACK model
 
-## Idempotency
+The Companion's durable position is derived from Room contiguity. ACK throughSequence is always bounded by that durable contiguous position.
 
-`messageId` governs ingest idempotency; `syncBatchId` governs upload receipt replay. `messageRequestId` semantics are submit-domain and are not reused. Lost upload/fetch/ACK responses, retries, partial batches, and crashes all converge through receipt replay, range re-pull, ack re-send, and duplicate-absorbing ingest.
+The existing mailbox/history delivery cursors are not reused for history sync. Server pending state and Android Room contiguity provide the sync progress boundary.
 
-## Receipt semantics
+## Idempotency and crash behavior
 
-Receipts are independent persisted records surviving item eviction, with their own (open) TTL. Authorization is evaluated before every replay: a revoked caller receives `403` even holding a valid receipt, so receipts can never bypass current authorization.
+syncBatchId governs upload receipt replay; messageId governs local ingest deduplication. messageRequestId remains scoped to ordinary message submission and is not reused.
 
-## Crash/restart behavior
+Lost upload responses retry with the same batch ID. Lost fetch or ACK responses converge through range re-fetch, duplicate-absorbing ingest, and ACK retry. Room and Keystore remain separate durability systems; no distributed transaction is assumed.
 
-Primary crashes lose nothing durable (Room is the source; server holds unacked work). Companion crashes resume from the durable contiguous prefix; redelivery lands in the duplicate path; cursor recomputation is pure. No distributed transaction is assumed; Room and Keystore remain separate durability systems with explicit ordered transitions.
+## Revocation and multi-Companion behavior
 
-## Revocation
-
-Per-request ACTIVE/role revalidation on upload, fetch, and ACK. In-flight batches to a just-revoked Companion remain technically decryptable (accepted property, identical to delivered-but-unacked mailbox items). Re-enrollment mints new device IDs (never reused), so sync state starts clean. Primary revocation suspends synchronization; recovery elects a new Primary through the existing recovery flow, starting empty.
-
-## Multi-Companion behavior
-
-Up to four Companions sync through independent per-(Companion, conversation) pending sets, cursors, batch IDs, sessions, and locks. Offline, stalled, or revoked Companions never block others. No global lock, no global cursor, no cross-Companion coupling.
+Upload, fetch, and ACK are re-authorized against current server device state. Revoked devices fail closed. Each Companion has independent pending state, batch IDs, sessions, and per-device locks; one stalled Companion does not block another.
 
 ## Security invariants
 
-E2EE confidentiality preserved; server blind (including frontier); Primary authority enforced by server roles plus pinned identities; conflicting sequence/message data rejected rather than substituted; at-least-once idempotent convergence; no silent completion (gaps and regressions visible); revocation checked per operation; no trust in client-declared roles; no gap markers; no plaintext server processing.
-
-## Guarantees
-
-Confidentiality; Primary-authoritative history; blind server; silent-substitution resistance; idempotent convergence when both devices participate; visible pending state; crash/restart convergence while Primary history remains intact; per-operation revocation; independent multi-Companion streams.
-
-## Non-guarantees
-
-Authenticated completeness; recovery of Primary-lost history; freshness while Primary is offline; push/realtime delivery; background synchronization; Primary succession; backup/restore; final retention policy.
-
-## Rejected alternatives
-
-Reusing message-submit (same-user ban, friendship gating, wrong conversation model, realtime side effects); mailbox/history reuse (destructive queue vs unauthorized cross-device reads); direct P2P (no channel, offline unsupportable); server-held plaintext or re-encryption (breaks server blindness); sync-cursor/queue-head/batch-container entities; provenance/originDeviceId column; gap markers; parallel ingest pipeline; second signature scheme; new crypto; background/push triggers; demand channel; succession design.
+- E2EE confidentiality is preserved.
+- The server remains blind to plaintext and frontier contents.
+- Primary authority is enforced by server role plus pinned Signal identity.
+- Original message authorship metadata is preserved.
+- Conflicting sequence/message data is rejected rather than substituted.
+- Sync is at-least-once and idempotently convergent.
+- Gaps and frontier regressions remain visible; no gap markers normalize missing history.
+- No client-declared role is trusted.
+- No plaintext server processing is introduced.
 
 ## Consequences
 
-Slice 12 implementation (not started) requires: one new server pending-batch store with receipts, three sync endpoints with the composed authorization, and a thin Android coordinator reusing the existing ingest/DAO/crypto seams — with no Room migration and no crypto changes. The web Companion can reuse the same contract later.
+The protocol is implemented without a Room migration, new persistence architecture, new crypto primitive, push transport, background scheduler, or realtime channel.
 
-## Deferred parameters/decisions
+The server has a bounded opaque pending-set with receipts; Android reuses existing Room, MessageContentSealer, InboxProcessor, SessionEstablisher, and SessionDeviceLocks seams.
 
-Endpoint paths, batch size caps, sync-batch and receipt TTL values, exact status/error-code names, envelope version number, Primary upload cadence within manual sweep, web-Companion deltas, liveness/expiry values, succession, backup, push/realtime sync.
+## Deferred
+
+Still deferred after implementation:
+
+- final server retention/eviction policy beyond the sync pending TTL;
+- Primary/Companion liveness and succession policy;
+- backup/restore;
+- push/realtime synchronization;
+- Web Companion implementation and any web-specific UX;
+- identity/fingerprint verification UI;
+- OTPK replenishment and Kyber rotation;
+- recovery-code rotation;
+- AGPL-3.0-only libsignal distribution decision.
