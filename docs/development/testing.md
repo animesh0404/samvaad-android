@@ -127,3 +127,19 @@ The Primary conversation/history presentation implementation was committed as `5
 ### Slice 12 design freeze
 
 No Slice 12 implementation exists, so no implementation tests were added. Completed design-review evidence: architecture audit, threat-model challenge, two protocol-completeness reviews, ADR + server-contract design, and final contract-hardening review, all against the frozen candidate protocol (ADR 0026, PROPOSED). Implementation tests — server contract tests, Primary export tests, Companion ingest tests, crash-matrix restart tests, revocation-race tests, frontier tests — are future work tied to the implementation slices. Existing Slice 11/TLS test status is unchanged.
+
+
+### Slice 12
+
+Primary-to-Companion history synchronization was committed as `c4ab2da`.
+
+- Host unit suite: `446/446` pass with `--rerun-tasks`.
+- Android instrumented suite: `29/29` pass on the API 33 emulator.
+- Android instrumented suite: `29/29` pass on the physical Pixel 6a.
+- Final `assembleRelease --rerun-tasks` succeeded; the release APK was verified to contain no debug TLS trust material.
+- `assembleDebug` and `assembleDebugAndroidTest` succeeded.
+- `git diff --check` was clean before the checkpoint.
+- Sync coverage includes transport status/error mapping, encrypted payload binding, metadata persistence/corruption handling, Primary frontier calculation, Companion ingest, deduplication, gaps, ACK safety, retry identity, role gating, revocation handling, crash convergence, and manual-sync single-flight behavior.
+- The final instrumented count is explicitly 29 emulator + 29 physical; an earlier report that described 58 emulator tests was corrected.
+- The physical device remains unable to complete LAN login because of the previously identified environmental TCP/network limitation; this did not prevent the local instrumentation suite from passing.
+- No authenticated live-server round-trip was required for the Android checkpoint; the exact server contract was verified against server checkpoint `cbd8705`.
