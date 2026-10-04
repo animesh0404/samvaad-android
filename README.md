@@ -92,14 +92,14 @@ Reconciliation remains a bounded operation. Slice 11 exposes it through an expli
 
 ## Documentation map
 
-- `docs/architecture/current-state.md` — what Android actually implements now.
-- `docs/roadmap.md` — incremental Android implementation sequence.
-- `docs/api/server-checkpoint.md` — server integration boundary and version reference.
-- `docs/security/current-security-posture.md` — current Android security posture.
-- `docs/development/setup.md` — local development baseline.
-- `docs/development/testing.md` — test baseline and commands.
-- `docs/adr/` — Android-only architectural decisions.
-- `AGENTS.md` — implementation guardrails.
+- [`docs/architecture/current-state.md`](docs/architecture/current-state.md) — what Android actually implements now.
+- [`docs/roadmap.md`](docs/roadmap.md) — incremental Android implementation sequence.
+- [`docs/api/server-checkpoint.md`](docs/api/server-checkpoint.md) — server integration boundary and version reference.
+- [`docs/security/current-security-posture.md`](docs/security/current-security-posture.md) — current Android security posture.
+- [`docs/development/setup.md`](docs/development/setup.md) — local development baseline.
+- [`docs/development/testing.md`](docs/development/testing.md) — test baseline and commands.
+- [`docs/adr/`](docs/adr/) — Android-only architectural decisions.
+- [`AGENTS.md`](AGENTS.md) — implementation guardrails.
 
 ## Build / test
 
