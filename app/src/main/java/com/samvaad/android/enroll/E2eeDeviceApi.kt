@@ -259,4 +259,72 @@ interface E2eeDeviceApi {
         conversationId: String,
         throughSequence: Long,
     ): SyncCursor
+
+    /**
+     * GET /api/conversations/direct?limit=&offset=. Lists conversations
+     * the authenticated user participates in, newest first. Used by
+     * history sync so a fresh Companion with no local rows can still
+     * discover conversations to pull. Returns conversation IDs only;
+     * history content still comes from sync fetch.
+     */
+    @Throws(IOException::class)
+    suspend fun listConversations(
+        session: AuthSession,
+        serverAddress: String,
+        limit: Int = 20,
+    ): List<String>
+
+    /**
+     * POST /api/e2ee/sync-history/batches. Primary-only upload of one
+     * Companion's history batch for one conversation. Returns 201 with
+     * `createdNew=true` for a newly accepted batch, 200 with
+     * `createdNew=false` for an exact idempotent replay.
+     *
+     * @throws EnrollException.Conflict on divergent batch-id reuse (409).
+     * @throws EnrollException.Forbidden when the caller is not an ACTIVE
+     *   PRIMARY or the recipient is not an ACTIVE same-user COMPANION (403).
+     * @throws EnrollException.NotFound unknown conversation/device (404).
+     * @throws EnrollException.BadRequest malformed batch (400).
+     */
+    @Throws(IOException::class)
+    suspend fun uploadSyncBatch(
+        session: AuthSession,
+        serverAddress: String,
+        request: SyncUploadRequest,
+    ): SyncUploadResult
+
+    /**
+     * GET /api/e2ee/sync-history/batches?conversationId=&afterSequence=&limit=.
+     * Companion-only fetch of this device's pending sync items for one
+     * conversation, ascending by sequenceNumber. Empty is normal (nothing
+     * pending). [limit] is 1..100.
+     *
+     * @throws EnrollException.Forbidden when the caller is not an ACTIVE
+     *   COMPANION with a live PRIMARY relationship (403).
+     * @throws EnrollException.NotFound unknown conversation (404).
+     */
+    @Throws(IOException::class)
+    suspend fun fetchSyncBatch(
+        session: AuthSession,
+        serverAddress: String,
+        conversationId: String,
+        afterSequence: Long,
+        limit: Int = 20,
+    ): List<SyncBatchItem>
+
+    /**
+     * POST /api/e2ee/sync-history/ack with `{conversationId,
+     * throughSequence}`. Companion-only prefix eviction of this device's
+     * pending sync rows at or below [throughSequence]. Idempotent:
+     * repeating the same or a lower prefix evicts nothing further.
+     * Callers must ACK only through the highest locally durable
+     * contiguous sequence, never through a gap.
+     */
+    @Throws(IOException::class)
+    suspend fun ackSync(
+        session: AuthSession,
+        serverAddress: String,
+        conversationId: String,
+        throughSequence: Long,
+    ): SyncAckResult
 }

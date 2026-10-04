@@ -208,6 +208,167 @@ class InboxProcessor(
     }
 
     /**
+     * Ingest one Primary-exported sync item into durable state (no
+     * mailbox ACK: sync carries none; the caller ACKs the sync prefix
+     * separately). Shares the gate + decrypt pipeline with mailbox and
+     * history ingestion, but resolves the Signal session through the
+     * batch-declared Primary device ([syncSenderDeviceId]) instead of
+     * the item sender: synced items keep their ORIGINAL senderDeviceId
+     * (friend or Primary), for which this device holds no session.
+     * Persisted rows stay verbatim-original (IN, acked, no request or
+     * server-message identity); only the decryption session differs.
+     * Returns the authenticated frontier on [SyncIngestResult.Stored] so
+     * the caller can track pending-vs-complete without trusting it.
+     */
+    suspend fun ingestSyncItem(
+        item: com.samvaad.android.enroll.SyncBatchItem,
+        syncSenderDeviceId: String,
+    ): SyncIngestResult {
+        val gated = gateItem(item.envelopeType, item.ciphertextBase64, item.messageId)
+        if (gated is GateOutcome.Invalid) return SyncIngestResult.Skipped(gated.reason)
+        gated as GateOutcome.Valid
+        val ciphertext = gated.ciphertext
+        // Unknown Primary fails closed here: no decrypt, no store, no
+        // session creation — exactly like unknown mailbox senders.
+        val entry = sessions.read(syncSenderDeviceId)
+            ?: return SyncIngestResult.Skipped("unknown-sync-sender")
+        val adopted = localMetadata.readAdopted()
+            ?: return SyncIngestResult.Skipped("no-local-device")
+        val decrypted = deviceLocks.withDeviceLock(entry.remoteDeviceId) {
+            decryptChannel(adopted, entry, item.envelopeType, ciphertext)
+        }
+        return when (decrypted) {
+            is ChannelDecrypt.Duplicate -> SyncIngestResult.Duplicate
+            is ChannelDecrypt.Unavailable -> SyncIngestResult.Skipped(decrypted.reason)
+            is ChannelDecrypt.Ok -> {
+                val payload = try {
+                    parseSyncPayload(decrypted.plaintext)
+                } catch (_: SyncPayloadMalformedException) {
+                    return SyncIngestResult.Skipped("malformed-sync-payload")
+                }
+                // Binding: the decrypted payload must describe exactly
+                // the requested wire item, or the Primary (or a faulty
+                // transport) mixed conversations. Fail closed, never
+                // relabel.
+                if (payload.messageId != item.messageId
+                    || payload.sequenceNumber != item.sequenceNumber
+                    || payload.conversationId != item.conversationId
+                ) {
+                    return SyncIngestResult.Skipped("sync-binding-mismatch")
+                }
+                storeSyncRow(adopted, entry, item, payload, decrypted.postDecryptSessionBytes)
+            }
+        }
+    }
+
+    /**
+     * Persists one validated sync payload as a verbatim-original durable
+     * row: direction IN, acked (never enters mailbox ACK paths),
+     * original sender/recipient/message/conversation/sequence/timestamp,
+     * no request or server-message identity. Mirrors the
+     * decryptSealAndStore ordering (row before session seal) so any crash
+     * redelivers into clean re-decrypt or proven duplicate.
+     */
+    private suspend fun storeSyncRow(
+        adopted: com.samvaad.android.enroll.AdoptedDevice,
+        entry: com.samvaad.android.session.SignalSessionEntry,
+        item: com.samvaad.android.enroll.SyncBatchItem,
+        payload: SyncPayload,
+        postDecryptSessionBytes: ByteArray,
+    ): SyncIngestResult {
+        val sealedInner = try {
+            contentSealer.seal(payload.messageId, payload.plaintext)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: com.samvaad.android.crypto.VaultException) {
+            return SyncIngestResult.Skipped("crypto-unavailable")
+        } catch (_: IllegalArgumentException) {
+            return SyncIngestResult.Skipped("content-seal-failed")
+        }
+        try {
+            val existing = dao().conversation(payload.conversationId)
+            dao().upsertConversation(
+                com.samvaad.android.db.ConversationEntity(
+                    conversationId = payload.conversationId,
+                    lastSeenSequence = maxOf(
+                        existing?.lastSeenSequence ?: 0L, payload.sequenceNumber
+                    ),
+                    cursorThrough = existing?.cursorThrough ?: 0L,
+                )
+            )
+            val inserted = dao().insertIgnore(
+                com.samvaad.android.db.MessageEntity(
+                    messageId = payload.messageId,
+                    conversationId = payload.conversationId,
+                    sequenceNumber = payload.sequenceNumber,
+                    direction = com.samvaad.android.db.MessageDirection.IN,
+                    senderDeviceId = payload.senderDeviceId,
+                    recipientDeviceId = payload.recipientDeviceId,
+                    envelopeType = item.envelopeType,
+                    ciphertext = item.ciphertextBase64.let {
+                        com.samvaad.android.crypto.SpikeCryptoMaterial.decodeBase64(it)
+                    },
+                    plaintextSealed = sealedInner,
+                    sendState = null,
+                    acked = true,
+                    requestId = null,
+                    serverMessageId = null,
+                    serverTimestamp = payload.serverTimestamp,
+                    createdAt = System.currentTimeMillis(),
+                )
+            )
+            if (inserted == -1L && dao().byMessageId(payload.messageId) == null) {
+                return SyncIngestResult.Skipped("message-missing")
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            return SyncIngestResult.Skipped("message-store-failed")
+        }
+        try {
+            sessionVault.seal(
+                SessionEstablisher.sessionHandleFor(entry.remoteDeviceId),
+                com.samvaad.android.crypto.CryptoRecordKind.SESSION,
+                postDecryptSessionBytes,
+            )
+        } catch (_: com.samvaad.android.crypto.VaultException.WrappingKeyMissing) {
+            return SyncIngestResult.Skipped("crypto-unavailable")
+        } catch (_: com.samvaad.android.crypto.VaultException) {
+            return SyncIngestResult.Skipped("session-persist-failed")
+        }
+        return SyncIngestResult.Stored(frontier = payload.frontier)
+    }
+
+    /**
+     * Sync ingest outcome. [Stored] carries the batch's authenticated
+     * frontier so the caller can compare it against durable contiguity.
+     * [Duplicate] means the row already exists (redelivery absorbed);
+     * the frontier is not re-surfaced — it was reported when first
+     * stored, and re-reporting it here would let a stale batch move a
+     * newer frontier backwards through a max() the caller must own.
+     */
+    sealed interface SyncIngestResult {
+        data class Stored(val frontier: Long) : SyncIngestResult
+        data object Duplicate : SyncIngestResult
+        data class Skipped(val reason: String) : SyncIngestResult
+    }
+
+    /**
+     * Shared Signal decrypt pipeline: identity restore, session unseal
+     * + pin gate, decrypt, post-decrypt identity defense. Extracted
+     * from [decryptSealAndStore] so mailbox, history, and sync ingest
+     * decrypt identically; only session source (mailbox sender vs sync
+     * Primary) and the persisted row shape differ per caller. No
+     * behavior change for existing callers.
+     */
+    private sealed interface ChannelDecrypt {
+        data class Ok(val plaintext: ByteArray, val postDecryptSessionBytes: ByteArray) :
+            ChannelDecrypt
+        data object Duplicate : ChannelDecrypt
+        data class Unavailable(val reason: String) : ChannelDecrypt
+    }
+
+    /**
      * Ingest one server-history item into durable state (no mailbox ACK:
      * history carries none). Shares the gate + decrypt-seal-store core
      * with mailbox processing; returns whether the message is now
@@ -260,60 +421,66 @@ class InboxProcessor(
      * still pre-decrypt) or a proven duplicate (disk advanced) — never
      * into an ambiguous state.
      */
-    private suspend fun decryptSealAndStore(
+    /**
+     * Shared decrypt half of [decryptSealAndStore]: restores local
+     * identity material, unseals and pin-gates the session, decrypts,
+     * and re-checks the post-decrypt identity. Callers own sealing,
+     * persistence, and session re-sealing from the returned bytes.
+     */
+    private suspend fun decryptChannel(
         adopted: com.samvaad.android.enroll.AdoptedDevice,
-        entry: SignalSessionEntry,
-        item: MailboxItem,
+        entry: com.samvaad.android.session.SignalSessionEntry,
+        envelopeType: String,
         ciphertext: ByteArray,
-    ): DecryptOutcome {
+    ): ChannelDecrypt {
         val pinned = try {
             SpikeCryptoMaterial.decodeBase64(entry.remoteIdentityPublicKeyB64)
         } catch (_: IllegalArgumentException) {
-            return DecryptOutcome.Unavailable("session-metadata-corrupt")
+            return ChannelDecrypt.Unavailable("session-metadata-corrupt")
         }
         val localIdentity = try {
             // Bind-adopted records carry no handles: fail closed, never
             // decrypt without local private material.
             val identityHandleId = adopted.identityHandleId
-                ?: return DecryptOutcome.Unavailable("crypto-unavailable")
+                ?: return ChannelDecrypt.Unavailable("crypto-unavailable")
             restoreLocal(identityHandleId, CryptoRecordKind.IDENTITY)
         } catch (_: VaultException) {
-            return DecryptOutcome.Unavailable("crypto-unavailable")
+            return ChannelDecrypt.Unavailable("crypto-unavailable")
         } catch (_: CryptoRecoveryException) {
-            return DecryptOutcome.Unavailable("crypto-unavailable")
+            return ChannelDecrypt.Unavailable("crypto-unavailable")
         } catch (_: IllegalArgumentException) {
-            return DecryptOutcome.Unavailable("crypto-unavailable")
+            return ChannelDecrypt.Unavailable("crypto-unavailable")
         }
         // Eagerly restore the adopted private records; the OTK index is
         // derived from the records themselves, so no ID ordering is
         // assumed and the metadata schema is untouched. Absent handles
         // (bind-adopted) fail closed here.
         val signedHandleId = adopted.signedHandleId
-            ?: return DecryptOutcome.Unavailable("crypto-unavailable")
+            ?: return ChannelDecrypt.Unavailable("crypto-unavailable")
         val signed = restoreSigned(signedHandleId)
-            ?: return DecryptOutcome.Unavailable("crypto-unavailable")
+            ?: return ChannelDecrypt.Unavailable("crypto-unavailable")
         val kyberHandleId = adopted.kyberHandleId
-            ?: return DecryptOutcome.Unavailable("crypto-unavailable")
+            ?: return ChannelDecrypt.Unavailable("crypto-unavailable")
         val kyber = restoreKyber(kyberHandleId)
-            ?: return DecryptOutcome.Unavailable("crypto-unavailable")
+            ?: return ChannelDecrypt.Unavailable("crypto-unavailable")
         val otpks = adopted.otpkHandleIds.mapNotNull { restoreOtpk(it) }
         val sealed = try {
             sessionVault.unseal(
                 SessionEstablisher.sessionHandleFor(entry.remoteDeviceId), CryptoRecordKind.SESSION
             )
         } catch (_: VaultException.WrappingKeyMissing) {
-            return DecryptOutcome.Unavailable("crypto-unavailable")
+            return ChannelDecrypt.Unavailable("crypto-unavailable")
         } catch (_: VaultException) {
-            return DecryptOutcome.Unavailable("session-blob-missing")
+            return ChannelDecrypt.Unavailable("session-blob-missing")
         }
         // Readiness + pin gate on the CURRENT bytes before decrypting.
         try {
             val ready = adapter.inspectSession(sealed)
             if (!ready.remoteIdentityBytes.contentEquals(pinned)) {
-                return DecryptOutcome.Unavailable("identity-mismatch")
+                return ChannelDecrypt.Unavailable("identity-mismatch")
             }
         } catch (_: SessionCryptoException) {
-            return DecryptOutcome.Unavailable("session-corrupt")
+            return ChannelDecrypt.Unavailable("session-corrupt")
         }
         val decrypted = try {
             adapter.decryptForInbox(
@@ -326,24 +493,43 @@ class InboxProcessor(
                 pinnedRemoteIdentity = pinned,
                 remoteUsername = entry.remoteUsername,
                 remoteSignalDeviceId = entry.remoteSignalDeviceId,
-                envelopeType = item.envelopeType,
+                envelopeType = envelopeType,
                 ciphertext = ciphertext,
             )
         } catch (_: SessionCryptoException.DuplicateMessage) {
-            return DecryptOutcome.Duplicate
+            return ChannelDecrypt.Duplicate
         } catch (_: SessionCryptoException.UntrustedIdentity) {
-            return DecryptOutcome.Unavailable("identity-mismatch")
+            return ChannelDecrypt.Unavailable("identity-mismatch")
         } catch (_: SessionCryptoException) {
-            return DecryptOutcome.Unavailable("decrypt-failed")
+            return ChannelDecrypt.Unavailable("decrypt-failed")
         }
         // Defense: the decrypted record must still pin the same identity.
         if (!decrypted.remoteIdentityBytes.contentEquals(pinned)) {
-            return DecryptOutcome.Unavailable("identity-mismatch")
+            return ChannelDecrypt.Unavailable("identity-mismatch")
         }
+        return ChannelDecrypt.Ok(decrypted.plaintext, decrypted.postDecryptSessionBytes)
+    }
+
+    private suspend fun decryptSealAndStore(
+        adopted: com.samvaad.android.enroll.AdoptedDevice,
+        entry: SignalSessionEntry,
+        item: MailboxItem,
+        ciphertext: ByteArray,
+    ): DecryptOutcome {
+        // Shared decrypt pipeline (see decryptChannel): identical
+        // identity restore, pin gates, and decrypt semantics as before
+        // this extraction; only row construction below is mailbox-shaped.
+        val channel = decryptChannel(adopted, entry, item.envelopeType, ciphertext)
+        val decrypted = when (channel) {
+            is ChannelDecrypt.Duplicate -> return DecryptOutcome.Duplicate
+            is ChannelDecrypt.Unavailable -> return DecryptOutcome.Unavailable(channel.reason)
+            is ChannelDecrypt.Ok -> channel
+        }
+        val plaintext = decrypted.plaintext
         // Seal the plaintext for the durable row before anything else is
         // persisted: cleartext must never reach the database.
         val sealedPlaintext = try {
-            contentSealer.seal(item.messageId, decrypted.plaintext)
+            contentSealer.seal(item.messageId, plaintext)
         } catch (e: CancellationException) {
             throw e
         } catch (_: VaultException) {

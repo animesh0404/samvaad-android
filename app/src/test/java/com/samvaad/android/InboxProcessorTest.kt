@@ -201,6 +201,37 @@ class InboxProcessorTest {
         ): com.samvaad.android.enroll.SyncCursor =
             com.samvaad.android.enroll.SyncCursor(conversationId, serverCursor)
 
+        override suspend fun listConversations(
+            session: AuthSession,
+            serverAddress: String,
+            limit: Int,
+        ): List<String> =
+            throw AssertionError("no conversation list in this test")
+
+        override suspend fun uploadSyncBatch(
+            session: AuthSession,
+            serverAddress: String,
+            request: com.samvaad.android.enroll.SyncUploadRequest,
+        ): com.samvaad.android.enroll.SyncUploadResult =
+            throw AssertionError("no history sync in this test")
+
+        override suspend fun fetchSyncBatch(
+            session: AuthSession,
+            serverAddress: String,
+            conversationId: String,
+            afterSequence: Long,
+            limit: Int,
+        ): List<com.samvaad.android.enroll.SyncBatchItem> =
+            throw AssertionError("no history sync in this test")
+
+        override suspend fun ackSync(
+            session: AuthSession,
+            serverAddress: String,
+            conversationId: String,
+            throughSequence: Long,
+        ): com.samvaad.android.enroll.SyncAckResult =
+            throw AssertionError("no history sync in this test")
+
         override suspend fun advanceSyncCursor(
             session: AuthSession,
             serverAddress: String,

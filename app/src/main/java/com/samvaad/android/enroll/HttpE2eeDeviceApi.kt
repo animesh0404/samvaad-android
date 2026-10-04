@@ -415,6 +415,169 @@ class HttpE2eeDeviceApi(
         }
     }
 
+    override suspend fun listConversations(
+        session: AuthSession,
+        serverAddress: String,
+        limit: Int,
+    ): List<String> = withContext(Dispatchers.IO) {
+        require(limit in 1..100) { "conversation list limit must be 1..100" }
+        val (code, response) = get(
+            session, serverAddress, "/api/conversations/direct?limit=$limit&offset=0"
+        )
+        if (code != HttpURLConnection.HTTP_OK) {
+            throw classifySync(code)
+        }
+        try {
+            val array = JSONArray(response)
+            List(array.length()) { i -> array.getJSONObject(i).getString("conversationId") }
+        } catch (e: JSONException) {
+            throw EnrollException.Malformed(e)
+        }
+    }
+
+    override suspend fun uploadSyncBatch(
+        session: AuthSession,
+        serverAddress: String,
+        request: SyncUploadRequest,
+    ): SyncUploadResult = withContext(Dispatchers.IO) {
+        require(request.items.isNotEmpty()) { "sync batch must contain at least one item" }
+        val items = JSONArray()
+        request.items.forEach {
+            items.put(
+                JSONObject()
+                    .put("messageId", it.messageId)
+                    .put("sequenceNumber", it.sequenceNumber)
+                    .put("senderDeviceId", it.senderDeviceId)
+                    .put("envelopeType", it.envelopeType)
+                    .put("ciphertext", it.ciphertextBase64)
+            )
+        }
+        val body = JSONObject()
+            .put("syncBatchId", request.syncBatchId.toString())
+            .put("recipientDeviceId", request.recipientDeviceId)
+            .put("conversationId", request.conversationId)
+            .put("fromSequence", request.fromSequence)
+            .put("frontier", request.frontier)
+            .put("items", items)
+            .toString()
+        val (code, response) =
+            post(session, serverAddress, "/api/e2ee/sync-history/batches", body)
+        when (code) {
+            HttpURLConnection.HTTP_CREATED -> parseSyncUpload(response, createdNew = true)
+            HttpURLConnection.HTTP_OK -> parseSyncUpload(response, createdNew = false)
+            else -> throw classifySync(code)
+        }
+    }
+
+    override suspend fun fetchSyncBatch(
+        session: AuthSession,
+        serverAddress: String,
+        conversationId: String,
+        afterSequence: Long,
+        limit: Int,
+    ): List<SyncBatchItem> = withContext(Dispatchers.IO) {
+        require(conversationId.isNotBlank()) { "conversationId must be present" }
+        require(afterSequence >= 0) { "afterSequence must be >= 0" }
+        require(limit in 1..100) { "sync fetch limit must be 1..100" }
+        java.util.UUID.fromString(conversationId)
+        val (code, response) = get(
+            session,
+            serverAddress,
+            "/api/e2ee/sync-history/batches?conversationId=$conversationId" +
+                "&afterSequence=$afterSequence&limit=$limit",
+        )
+        if (code != HttpURLConnection.HTTP_OK) {
+            throw classifySync(code)
+        }
+        try {
+            val array = JSONArray(response)
+            List(array.length()) { i -> parseSyncBatchItem(array.getJSONObject(i), conversationId) }
+        } catch (e: JSONException) {
+            throw EnrollException.Malformed(e)
+        } catch (e: IllegalArgumentException) {
+            throw EnrollException.Malformed(e)
+        }
+    }
+
+    override suspend fun ackSync(
+        session: AuthSession,
+        serverAddress: String,
+        conversationId: String,
+        throughSequence: Long,
+    ): SyncAckResult = withContext(Dispatchers.IO) {
+        require(conversationId.isNotBlank()) { "conversationId must be present" }
+        require(throughSequence >= 0) { "throughSequence must be >= 0" }
+        java.util.UUID.fromString(conversationId)
+        val (code, response) = post(
+            session,
+            serverAddress,
+            "/api/e2ee/sync-history/ack",
+            JSONObject()
+                .put("conversationId", conversationId)
+                .put("throughSequence", throughSequence)
+                .toString(),
+        )
+        if (code != HttpURLConnection.HTTP_OK) {
+            throw classifySync(code)
+        }
+        try {
+            SyncAckResult(evicted = JSONObject(response).getInt("evicted"))
+        } catch (e: JSONException) {
+            throw EnrollException.Malformed(e)
+        }
+    }
+
+    private fun parseSyncUpload(json: String, createdNew: Boolean): SyncUploadResult {
+        try {
+            val root = JSONObject(json)
+            return SyncUploadResult(
+                syncBatchId = java.util.UUID.fromString(root.getString("syncBatchId")),
+                acceptedCount = root.getInt("acceptedCount"),
+                createdNew = createdNew,
+            )
+        } catch (e: JSONException) {
+            throw EnrollException.Malformed(e)
+        } catch (e: IllegalArgumentException) {
+            throw EnrollException.Malformed(e)
+        }
+    }
+
+    private fun parseSyncBatchItem(json: JSONObject, conversationId: String): SyncBatchItem {
+        val ciphertext = json.getString("ciphertext")
+        com.samvaad.android.crypto.SpikeCryptoMaterial.decodeBase64(ciphertext)
+        // The server must only return this conversation's pending rows:
+        // a foreign conversationId is a malformed response, never
+        // silently relabeled.
+        val itemConversationId = json.getString("conversationId")
+        if (itemConversationId != conversationId) {
+            throw EnrollException.Malformed(
+                IllegalArgumentException("sync item for unexpected conversation")
+            )
+        }
+        return SyncBatchItem(
+            messageId = json.getString("messageId"),
+            conversationId = conversationId,
+            sequenceNumber = json.getLong("sequenceNumber"),
+            senderDeviceId = json.getString("senderDeviceId"),
+            envelopeType = json.getString("envelopeType"),
+            ciphertextBase64 = ciphertext,
+        )
+    }
+
+    /**
+     * History-sync classifier. Same taxonomy as [classifyHistory], plus
+     * first-class 409: divergent batch-id reuse must converge through a
+     * fixed sync batch id, never blind-retry as new content.
+     */
+    private fun classifySync(code: Int): EnrollException = when (code) {
+        HttpURLConnection.HTTP_UNAUTHORIZED -> EnrollException.Unauthorized()
+        HttpURLConnection.HTTP_BAD_REQUEST -> EnrollException.BadRequest()
+        HttpURLConnection.HTTP_FORBIDDEN -> EnrollException.Forbidden()
+        HttpURLConnection.HTTP_NOT_FOUND -> EnrollException.NotFound()
+        HttpURLConnection.HTTP_CONFLICT -> EnrollException.Conflict()
+        else -> EnrollException.ServerRejected()
+    }
+
     private fun parseHistoryItem(json: JSONObject): HistoryItem {
         val ciphertext = json.getString("ciphertext")
         // Transport-encoding gate: history pages feed durable persistence,

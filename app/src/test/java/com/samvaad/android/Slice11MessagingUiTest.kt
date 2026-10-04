@@ -96,6 +96,8 @@ class Slice11MessagingUiTest {
             { SyncCursor("conv-1", 0L) }
         var advanceHandler: (Long) -> SyncCursor =
             { SyncCursor("conv-1", it) }
+        var devicesHandler: () -> DeviceList =
+            { throw AssertionError("no device list in this slice") }
         var submitCalls = 0
 
         override suspend fun enroll(
@@ -114,7 +116,7 @@ class Slice11MessagingUiTest {
         override suspend fun listDevices(
             session: AuthSession,
             serverAddress: String,
-        ): DeviceList = throw AssertionError("no device list in this slice")
+        ): DeviceList = devicesHandler()
 
         override suspend fun approveDevice(
             session: AuthSession,
@@ -184,6 +186,37 @@ class Slice11MessagingUiTest {
             serverAddress: String,
             conversationId: String,
         ): SyncCursor = cursorHandler()
+
+        override suspend fun listConversations(
+            session: AuthSession,
+            serverAddress: String,
+            limit: Int,
+        ): List<String> =
+            throw AssertionError("no conversation list in this test")
+
+        override suspend fun uploadSyncBatch(
+            session: AuthSession,
+            serverAddress: String,
+            request: com.samvaad.android.enroll.SyncUploadRequest,
+        ): com.samvaad.android.enroll.SyncUploadResult =
+            throw AssertionError("no history sync in this test")
+
+        override suspend fun fetchSyncBatch(
+            session: AuthSession,
+            serverAddress: String,
+            conversationId: String,
+            afterSequence: Long,
+            limit: Int,
+        ): List<com.samvaad.android.enroll.SyncBatchItem> =
+            throw AssertionError("no history sync in this test")
+
+        override suspend fun ackSync(
+            session: AuthSession,
+            serverAddress: String,
+            conversationId: String,
+            throughSequence: Long,
+        ): com.samvaad.android.enroll.SyncAckResult =
+            throw AssertionError("no history sync in this test")
 
         override suspend fun advanceSyncCursor(
             session: AuthSession,
@@ -450,6 +483,9 @@ class Slice11MessagingUiTest {
     @Test
     fun sync_entersLoadingState_thenCompletes() {
         sealLocalDevice()
+        // History sync runs after the sweep on every manual Sync: an
+        // empty device list keeps it a silent no-op here.
+        api.devicesHandler = { DeviceList("ENROLLED_ACTIVE", emptyList()) }
         val gate = CountDownLatch(1)
         api.mailboxHandler = {
             // Wait off the main thread: the sweep suspends, the Syncing…

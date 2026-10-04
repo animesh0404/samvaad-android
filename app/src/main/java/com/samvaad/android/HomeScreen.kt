@@ -54,6 +54,8 @@ import com.samvaad.android.enroll.HttpE2eeDeviceApi
 import com.samvaad.android.enroll.RecipientDeviceRecord
 import com.samvaad.android.enroll.RecoveryMode
 import com.samvaad.android.session.FileSessionMetadataStore
+import com.samvaad.android.session.FileSyncMetadataStore
+import com.samvaad.android.session.HistorySyncCoordinator
 import com.samvaad.android.session.InboxProcessor
 import com.samvaad.android.session.MessageSender
 import com.samvaad.android.session.ReconciliationSweep
@@ -168,6 +170,7 @@ private class MessagingGraph(
     val sender: MessageSender,
     val establisher: SessionEstablisher,
     val sweep: ReconciliationSweep,
+    val historySync: HistorySyncCoordinator,
 )
 
 @Composable
@@ -458,6 +461,16 @@ fun HomeScreen(
         val sealer = MessageContentSealer(keys)
         val api = deviceApi ?: HttpE2eeDeviceApi()
         val db = MessageDatabase.open(context)
+        // One shared establisher: its in-flight single-flight map must
+        // cover messaging and history sync together.
+        val establisher = SessionEstablisher(
+            api = api,
+            localMetadata = deviceMeta,
+            sessions = sessionMeta,
+            adapter = adapter,
+            identityVault = cryptoVault,
+            sessionVault = sessionVault,
+        )
         MessagingGraph(
             api = api,
             db = db,
@@ -474,14 +487,7 @@ fun HomeScreen(
                 db = db,
                 contentSealer = sealer,
             ),
-            establisher = SessionEstablisher(
-                api = api,
-                localMetadata = deviceMeta,
-                sessions = sessionMeta,
-                adapter = adapter,
-                identityVault = cryptoVault,
-                sessionVault = sessionVault,
-            ),
+            establisher = establisher,
             sweep = ReconciliationSweep(
                 api = api,
                 localMetadata = deviceMeta,
@@ -492,6 +498,19 @@ fun HomeScreen(
                 deviceLocks = locks,
                 db = db,
                 contentSealer = sealer,
+            ),
+            historySync = HistorySyncCoordinator(
+                api = api,
+                localMetadata = deviceMeta,
+                sessions = sessionMeta,
+                adapter = adapter,
+                identityVault = cryptoVault,
+                sessionVault = sessionVault,
+                establisher = establisher,
+                deviceLocks = locks,
+                db = db,
+                contentSealer = sealer,
+                syncMetadata = FileSyncMetadataStore(context),
             ),
         )
     }
@@ -618,6 +637,16 @@ fun HomeScreen(
             try {
                 val report = messaging.sweep.sweep(session, serverAddress)
                 syncError = sweepErrorMessage(report)
+                // History sync runs after the sweep on every manual Sync:
+                // same guard, same bounded headless shape. Sweep errors
+                // take precedence (existing behavior preserved); a history
+                // error surfaces only when the sweep itself is clean.
+                // Non-PRIMARY/non-COMPANION devices report nothing here
+                // (the coordinator returns a clean empty report).
+                if (syncError == null) {
+                    val history = messaging.historySync.sync(session, serverAddress, identifier)
+                    syncError = history.error
+                }
                 loadConversations()
                 selectedConversationId?.let { loadDetail(it) }
             } catch (e: CancellationException) {
