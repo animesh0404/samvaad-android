@@ -8,11 +8,11 @@ Repository: `animesh0404/samvaad-server`
 
 Current relevant public `main` commit:
 
-`164463da10505c2b789556e02536e2f1e8701cf5`
+`cbd87053d788cd44c73be9f3d3441f18c04ce88e`
 
 Commit message:
 
-`feat: enforce primary and companion device roles`
+`fix: harden primary-to-companion history sync`
 
 This is the current public server baseline relevant to Android integration. It establishes server-assigned Primary/Companion roles while preserving the existing E2EE enrollment, approval, revocation, transport, mailbox, history, cursor, and realtime foundations.
 
@@ -107,14 +107,34 @@ The Android checkpoint `5b74e71dab514c88427617346a2cd800cfc4cabb` consumes the a
 
 No Android-specific endpoint was introduced. Slice 11 does not define server retention/eviction, realtime/push transport, Primary-to-Companion history synchronization, backup/restore, or any new message protocol.
 
-## Slice 12 design freeze (no server changes)
+## Slice 12 Primary-to-Companion history synchronization
 
-Slice 12 protocol work required **no server implementation changes**.
+Slice 12 now includes both the server implementation and Android integration of the history-sync protocol frozen by ADR 0026.
 
-Android ADR 0026 proposes the Primary-to-Companion history-sync protocol, but no sync endpoints currently exist in server code. In particular, the following are **proposed by ADR 0026 and not yet implemented** — they must not be treated as available contracts:
+### Server sync contracts
 
-- `POST /api/e2ee/sync-history/batches`
-- `GET /api/e2ee/sync-history/batches`
-- `POST /api/e2ee/sync-history/ack`
+The current server baseline implements:
 
-The existing server baseline above is unchanged: the consumed contracts remain authentication, enrollment, directory/claim, message submission, mailbox fetch/ack, conversation history reads, and synchronization-cursor reads/advancement, plus the approval/recovery contracts. Server retention/eviction, liveness, succession, and backup remain deferred.
+- `POST /api/e2ee/sync-history/batches` — ACTIVE PRIMARY uploads an opaque bounded batch for an ACTIVE same-user COMPANION; new uploads return 201 and exact idempotent replay returns 200.
+- `GET /api/e2ee/sync-history/batches?conversationId=&afterSequence=&limit=` — ACTIVE COMPANION fetches pending opaque items for a participating conversation.
+- `POST /api/e2ee/sync-history/ack` — ACTIVE COMPANION advances a monotonic prefix and evicts acknowledged pending items.
+
+Authorization is session/device/role based and revalidated per operation. Pending items are opaque, upload is whole-batch atomic, global `syncBatchId` receipts survive item eviction, conflicts return 409, and the implemented lazy TTL is seven days. No server plaintext processing or existing message/history/cursor contract reuse was introduced.
+
+### Android consumption
+
+Android consumes these endpoints through `E2eeDeviceApi`/`HttpE2eeDeviceApi` and the bounded `HistorySyncCoordinator`.
+
+Primary export reads durable Room history, computes the highest-contiguous frontier, opens sealed plaintext only in memory, encrypts each item through the existing Primary→Companion Signal session, and uploads stable batch IDs.
+
+Companion import fetches ranges from the durable local contiguous position, decrypts using the Primary session while preserving original sender/recipient metadata, seals plaintext before Room persistence, and ACKs only through locally contiguous durable state. `lastSeenFrontier` is stored in the existing no-backup metadata-store pattern and cannot override Room contiguity.
+
+The existing contracts for device state, recipient directory/claim, and conversation discovery remain in use. No Android-specific server endpoint was introduced.
+
+### Validation
+
+Server Slice 12 foundation and hardening are checkpointed at `cbd8705`; the server suite is 539/539 and bootJar succeeds.
+
+Android Slice 12 is checkpointed at `c4ab2da`; Android unit tests are 446/446, emulator instrumentation is 29/29, physical Pixel 6a instrumentation is 29/29, and debug/release builds succeed.
+
+Deferred server architecture remains: retention/eviction policy beyond the sync pending TTL, liveness, Primary succession, backup/restore, push/realtime sync, and Web Companion behavior.
