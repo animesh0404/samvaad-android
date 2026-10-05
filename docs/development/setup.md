@@ -28,7 +28,7 @@ platform trust store.
 
 - Server SAN requirement: the dev certificate must list
   `DNS:localhost`, `IP:127.0.0.1`, **and** `IP:<lan-ip>` (currently
-  `IP:192.168.29.41`). Hostname verification fails otherwise.
+  `IP:192.168.1.41`). Hostname verification fails otherwise.
 - Debug trust anchor: `app/src/debug/res/raw/samvaad_dev_<ip>.pem`
   (public leaf certificate only).
 - Debug config: `app/src/debug/res/xml/network_security_config.xml`,

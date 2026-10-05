@@ -18,7 +18,7 @@ import org.junit.Test
  *
  * The DEBUG build trusts exactly one extra certificate — the LAN
  * development server leaf — for exactly one host
- * (`192.168.29.41`), with normal hostname verification and no
+ * (`192.168.1.41`), with normal hostname verification and no
  * cleartext. Release/main builds keep the platform default trust
  * store. These tests pin that boundary:
  *
@@ -34,9 +34,9 @@ import org.junit.Test
 class DebugLanTlsConfigTest {
 
     companion object {
-        private const val LAN_HOST = "192.168.29.41"
-        private const val LAN_URL = "https://192.168.29.41:8080"
-        private const val DEBUG_RAW_NAME = "samvaad_dev_192_168_29_41"
+        private const val LAN_HOST = "192.168.1.41"
+        private const val LAN_URL = "https://192.168.1.41:8080"
+        private const val DEBUG_RAW_NAME = "samvaad_dev_192_168_1_41"
     }
 
     // -- HTTPS enforcement (unchanged production behavior) ---------------
