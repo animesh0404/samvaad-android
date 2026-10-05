@@ -333,4 +333,92 @@ class HttpE2eeDeviceApiTest {
             }
         }
     }
+
+    private fun deviceBody(): JSONObject = JSONObject()
+        .put("deviceId", "22222222-2222-3333-4444-555555555555")
+        .put("registrationId", 4242)
+        .put("signalDeviceId", 2)
+        .put("deviceIdentityPublicKey", "aWRlbnRpdHk=")
+        .put("signedPrekeyId", 1)
+        .put("deviceRole", "COMPANION")
+        .put("status", "ACTIVE")
+        .put("availablePrekeys", 7)
+
+    @Test
+    fun beginAttach_parsesAlreadyBound() {
+        val port = serve(
+            200 to JSONObject()
+                .put("bound", true)
+                .put("device", deviceBody())
+                .toString()
+        )
+        val result = runBlocking {
+            HttpE2eeDeviceApi(requireHttps = false)
+                .beginAttach(session, "http://localhost:$port", "dev-1")
+        }
+        val bound = result as com.samvaad.android.enroll.AttachBegin.AlreadyBound
+        assertEquals("22222222-2222-3333-4444-555555555555", bound.device.deviceId)
+        assertEquals("COMPANION", bound.device.deviceRole)
+        val raw = server!!.requests.single()
+        assertTrue(raw.startsWith("POST /api/e2ee/devices/dev-1/attach/begin "))
+    }
+
+    @Test
+    fun beginAttach_parsesChallenge() {
+        val port = serve(
+            200 to JSONObject()
+                .put("bound", false)
+                .put("challengeId", "33333333-2222-3333-4444-555555555555")
+                .put("serverEphemeralPublicKey", "ZXBoZW1lcmFs")
+                .put("expiresAt", "2026-10-05T10:00:00")
+                .toString()
+        )
+        val result = runBlocking {
+            HttpE2eeDeviceApi(requireHttps = false)
+                .beginAttach(session, "http://localhost:$port", "dev-1")
+        }
+        val challenge = result as com.samvaad.android.enroll.AttachBegin.Challenge
+        assertEquals("33333333-2222-3333-4444-555555555555", challenge.challengeId)
+        assertEquals("ZXBoZW1lcmFs", challenge.serverEphemeralPublicKey)
+    }
+
+    @Test
+    fun completeAttach_postsProofShape() {
+        val port = serve(200 to deviceBody().toString())
+        val result = runBlocking {
+            HttpE2eeDeviceApi(requireHttps = false).completeAttach(
+                session, "http://localhost:$port", "dev-1", "challenge-1", "cHJvb2Y="
+            )
+        }
+        assertEquals("22222222-2222-3333-4444-555555555555", result.deviceId)
+        val raw = server!!.requests.single()
+        assertTrue(raw.startsWith("POST /api/e2ee/devices/dev-1/attach/complete "))
+        val sent = JSONObject(raw.substringAfterLast("\n"))
+        assertEquals("challenge-1", sent.getString("challengeId"))
+        assertEquals("cHJvb2Y=", sent.getString("proof"))
+    }
+
+    @Test
+    fun attach_403mapsToServerRejected_404toNotFound_409toConflict_400toBadRequest() {
+        suspend fun call(port: Int) =
+            HttpE2eeDeviceApi(requireHttps = false)
+                .completeAttach(session, "http://localhost:$port", "dev-1", "c", "cHJvb2Y=")
+
+        var port = serve(403 to "{}")
+        assertThrows(EnrollException.ServerRejected::class.java) {
+            runBlocking { call(port) }
+        }
+        port = serve(404 to "{}")
+        assertThrows(EnrollException.NotFound::class.java) {
+            runBlocking { call(port) }
+        }
+        port = serve(409 to "{}")
+        assertThrows(EnrollException.Conflict::class.java) {
+            runBlocking { call(port) }
+        }
+        port = serve(400 to "{}")
+        assertThrows(EnrollException.BadRequest::class.java) {
+            runBlocking { call(port) }
+        }
+    }
 }

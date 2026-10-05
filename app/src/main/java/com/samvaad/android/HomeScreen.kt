@@ -54,6 +54,7 @@ import com.samvaad.android.enroll.FileDeviceMetadataStore
 import com.samvaad.android.enroll.HttpE2eeDeviceApi
 import com.samvaad.android.enroll.RecipientDeviceRecord
 import com.samvaad.android.enroll.RecoveryMode
+import com.samvaad.android.enroll.SessionBindOutcome
 import com.samvaad.android.friends.FriendEntry
 import com.samvaad.android.friends.FriendException
 import com.samvaad.android.friends.FriendRequestRecord
@@ -153,6 +154,10 @@ private const val MESSAGES_LOAD_FAILED_MESSAGE =
     "Could not load messages."
 private const val SYNC_FAILED_MESSAGE =
     "Sync failed. Check the connection and try again."
+private const val BIND_FAILED_MESSAGE =
+    "Could not restore this device's session. Check the connection and try Sync again."
+private const val BIND_DEVICE_MESSAGE =
+    "This device could not be restored on your account. Run device setup again."
 private const val NOT_FRIENDS_MESSAGE =
     "You can only message friends."
 private const val USER_NOT_FOUND_MESSAGE =
@@ -771,12 +776,57 @@ fun HomeScreen(
         }
     }
 
+    /**
+     * Sessions already proven bound to the adopted device in this
+     * process. The server short-circuits the already-bound check without
+     * cryptography, but skipping it entirely keeps steady-state
+     * Sync/Send at zero extra calls. Keyed by session id: a fresh login
+     * always re-proves.
+     */
+    val boundSessions = remember { mutableSetOf<String>() }
+
+    /**
+     * Proactive session→device recovery for device-scoped calls. At most
+     * one handshake per session through this path (plus one per explicit
+     * user retry): callers never loop on refusal — every non-transport
+     * outcome converges to a surfaced message. [syncFailed] selects which
+     * error slot the message lands in.
+     */
+    suspend fun ensureSessionBound(syncFailed: Boolean): Boolean {
+        fun fail(message: String): Boolean {
+            if (syncFailed) syncError = message else sendError = message
+            return false
+        }
+        if (!bootstrap.hasAdoptedDevice()) return true
+        if (boundSessions.contains(session.sessionId)) return true
+        return when (val outcome = bootstrap.ensureSessionBound(session, serverAddress)) {
+            is SessionBindOutcome.Bound -> {
+                boundSessions.add(session.sessionId)
+                true
+            }
+            is SessionBindOutcome.NoAdoptedDevice -> true
+            is SessionBindOutcome.TransportRetryable ->
+                fail(BIND_FAILED_MESSAGE)
+            is SessionBindOutcome.NeedsLogin -> {
+                onLogout()
+                false
+            }
+            is SessionBindOutcome.CryptoUnavailable,
+            is SessionBindOutcome.DeviceUnavailable ->
+                fail(BIND_DEVICE_MESSAGE)
+        }
+    }
+
     fun sync() {
         // Main-thread guard like the approval taps: at most one sweep runs.
         if (syncing) return
         syncing = true
         scope.launch {
             try {
+                // Session/device binding is a precondition for every
+                // device-scoped call below: one bounded recovery attempt,
+                // then converge or surface — never a retry loop.
+                if (!ensureSessionBound(syncFailed = true)) return@launch
                 val report = messaging.sweep.sweep(session, serverAddress)
                 syncError = sweepErrorMessage(report)
                 // History sync runs after the sweep on every manual Sync:
@@ -845,6 +895,9 @@ fun HomeScreen(
         sending = true
         scope.launch {
             try {
+                // Same precondition as sync(): a send without a bound
+                // session is a guaranteed 403, so recover first, once.
+                if (!ensureSessionBound(syncFailed = false)) return@launch
                 when (val established = messaging.establisher.establish(
                     session, serverAddress, username, deviceId
                 )) {

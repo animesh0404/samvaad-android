@@ -62,6 +62,25 @@ sealed interface RecoveryMode {
 }
 
 /**
+ * Outcome of rebinding the current session to the locally adopted device
+ * (proof-of-possession attach handshake). [Bound] covers both the
+ * already-bound idempotent success and a completed challenge round.
+ * Only [TransportRetryable] may be retried, and only with user-visible
+ * bounded behavior — every other failure converges to a surfaced state.
+ */
+sealed interface SessionBindOutcome {
+    data object Bound : SessionBindOutcome
+    /** No adopted device on this installation: enrollment flow owns this case. */
+    data object NoAdoptedDevice : SessionBindOutcome
+    /** Adopted keys unavailable locally: surface recovery, never retry proofs. */
+    data object CryptoUnavailable : SessionBindOutcome
+    /** Server refused (revoked/foreign/bound-elsewhere/unknown): surface, never retry. */
+    data class DeviceUnavailable(val reason: String) : SessionBindOutcome
+    data object NeedsLogin : SessionBindOutcome
+    data object TransportRetryable : SessionBindOutcome
+}
+
+/**
  * First-device bootstrap orchestrator. Kept out of Compose by design.
  *
  * Reconcile-first invariant: local crypto material is generated at most
@@ -161,6 +180,119 @@ class EnrollmentCoordinator(
         } finally {
             pendingCodes = null
             running.set(false)
+        }
+    }
+
+    /**
+     * Rebinds the current session to the locally adopted device when the
+     * binding was lost (session expiry + re-login, refresh failure,
+     * reinstall-then-login with restored keys). Never creates a device,
+     * never spends a recovery code, never retries a refusal.
+     *
+     * Flow: `attach/begin` → already-bound returns [Bound] immediately;
+     * otherwise exactly one challenge round runs. A stale-challenge
+     * rejection (`BadRequest`) re-begins exactly once; any second failure
+     * surfaces. Callers must invoke this at most once per session for the
+     * proactive path (plus once per explicit user retry) — there is no
+     * polling here by design.
+     */
+    suspend fun ensureSessionBound(
+        session: AuthSession,
+        serverAddress: String,
+    ): SessionBindOutcome {
+        val adopted = metadata.readAdopted() ?: return SessionBindOutcome.NoAdoptedDevice
+        var attempts = 0
+        while (attempts < 2) {
+            attempts++
+            val begin = try {
+                api.beginAttach(session, serverAddress, adopted.deviceId)
+            } catch (e: EnrollException.Unauthorized) {
+                return SessionBindOutcome.NeedsLogin
+            } catch (e: EnrollException.NotFound) {
+                return SessionBindOutcome.DeviceUnavailable("device-unknown")
+            } catch (e: EnrollException.Conflict) {
+                return SessionBindOutcome.DeviceUnavailable("session-bound-elsewhere")
+            } catch (e: EnrollException.Forbidden) {
+                return SessionBindOutcome.DeviceUnavailable("not-owner")
+            } catch (e: EnrollException.RecoveryRequired) {
+                return SessionBindOutcome.DeviceUnavailable("recovery-required")
+            } catch (e: EnrollException.BadRequest) {
+                return SessionBindOutcome.DeviceUnavailable("begin-rejected")
+            } catch (e: EnrollException.ServerRejected) {
+                return SessionBindOutcome.DeviceUnavailable("begin-rejected")
+            } catch (e: EnrollException.Malformed) {
+                return SessionBindOutcome.DeviceUnavailable("begin-rejected")
+            } catch (e: IOException) {
+                return SessionBindOutcome.TransportRetryable
+            }
+            if (begin is AttachBegin.AlreadyBound) {
+                return SessionBindOutcome.Bound
+            }
+            val challenge = begin as AttachBegin.Challenge
+            val proof = attachProofOrNull(adopted, session, challenge.serverEphemeralPublicKey)
+                ?: return SessionBindOutcome.CryptoUnavailable
+            try {
+                api.completeAttach(
+                    session, serverAddress, adopted.deviceId,
+                    challenge.challengeId, proof,
+                )
+                return SessionBindOutcome.Bound
+            } catch (e: EnrollException.Unauthorized) {
+                return SessionBindOutcome.NeedsLogin
+            } catch (e: EnrollException.BadRequest) {
+                // Stale/expired challenge race: exactly one fresh round.
+                // Any other second-round failure falls through to surface.
+                if (attempts >= 2) {
+                    return SessionBindOutcome.DeviceUnavailable("challenge-invalid")
+                }
+            } catch (e: EnrollException.NotFound) {
+                return SessionBindOutcome.DeviceUnavailable("device-unknown")
+            } catch (e: EnrollException.Conflict) {
+                return SessionBindOutcome.DeviceUnavailable("session-bound-elsewhere")
+            } catch (e: EnrollException.Forbidden) {
+                return SessionBindOutcome.DeviceUnavailable("proof-rejected")
+            } catch (e: EnrollException.RecoveryRequired) {
+                return SessionBindOutcome.DeviceUnavailable("recovery-required")
+            } catch (e: EnrollException.ServerRejected) {
+                return SessionBindOutcome.DeviceUnavailable("proof-rejected")
+            } catch (e: EnrollException.Malformed) {
+                return SessionBindOutcome.DeviceUnavailable("complete-rejected")
+            } catch (e: IOException) {
+                return SessionBindOutcome.TransportRetryable
+            }
+        }
+        return SessionBindOutcome.DeviceUnavailable("challenge-invalid")
+    }
+
+    /**
+     * Computes the attach proof for the adopted identity, or null when
+     * local private material is unavailable. Never throws: proof
+     * computation failure is a device-state signal, not a transport one.
+     */
+    private fun attachProofOrNull(
+        adopted: AdoptedDevice,
+        session: AuthSession,
+        serverEphemeralPublicKeyB64: String,
+    ): String? {
+        val handleId = adopted.identityHandleId ?: return null
+        return try {
+            val identity = restoreIdentity(handleId)
+            if (SpikeCryptoMaterial.encodeBase64(identity.publicKey) != adopted.identityPublicKeyB64) {
+                return null
+            }
+            val proof = adapter.computeAttachProof(
+                identity.privateHandle,
+                SpikeCryptoMaterial.decodeBase64(serverEphemeralPublicKeyB64),
+                UUID.fromString(adopted.deviceId),
+                UUID.fromString(session.sessionId),
+            )
+            SpikeCryptoMaterial.encodeBase64(proof)
+        } catch (_: IllegalArgumentException) {
+            null
+        } catch (_: VaultException) {
+            null
+        } catch (_: CryptoRecoveryException) {
+            null
         }
     }
 

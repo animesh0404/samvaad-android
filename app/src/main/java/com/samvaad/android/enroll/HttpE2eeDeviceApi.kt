@@ -167,6 +167,65 @@ class HttpE2eeDeviceApi(
         }
     }
 
+    override suspend fun beginAttach(
+        session: AuthSession,
+        serverAddress: String,
+        deviceId: String,
+    ): AttachBegin = withContext(Dispatchers.IO) {
+        require(deviceId.isNotBlank()) { "deviceId must be present" }
+        // The contract takes no request body; `{}` keeps the shared POST
+        // helper (which always frames a JSON body) without inventing fields.
+        val (code, response) = post(
+            session, serverAddress, "/api/e2ee/devices/$deviceId/attach/begin", "{}"
+        )
+        if (code != HttpURLConnection.HTTP_OK) {
+            throw classifyDeviceAction(code, response)
+        }
+        try {
+            val json = JSONObject(response)
+            if (json.optBoolean("bound", false)) {
+                AttachBegin.AlreadyBound(parseDevice(json.getJSONObject("device")))
+            } else {
+                AttachBegin.Challenge(
+                    challengeId = json.getString("challengeId"),
+                    serverEphemeralPublicKey = json.getString("serverEphemeralPublicKey"),
+                    expiresAt = json.optString("expiresAt", null),
+                )
+            }
+        } catch (e: JSONException) {
+            throw EnrollException.Transport(e)
+        }
+    }
+
+    override suspend fun completeAttach(
+        session: AuthSession,
+        serverAddress: String,
+        deviceId: String,
+        challengeId: String,
+        proofBase64: String,
+    ): DeviceRecord = withContext(Dispatchers.IO) {
+        require(deviceId.isNotBlank()) { "deviceId must be present" }
+        require(challengeId.isNotBlank()) { "challengeId must be present" }
+        require(proofBase64.isNotBlank()) { "proof must be present" }
+        val (code, response) = post(
+            session,
+            serverAddress,
+            "/api/e2ee/devices/$deviceId/attach/complete",
+            JSONObject()
+                .put("challengeId", challengeId)
+                .put("proof", proofBase64)
+                .toString(),
+        )
+        if (code != HttpURLConnection.HTTP_OK) {
+            throw classifyDeviceAction(code, response)
+        }
+        try {
+            parseDevice(JSONObject(response))
+        } catch (e: JSONException) {
+            throw EnrollException.Transport(e)
+        }
+    }
+
     override suspend fun recoverEnroll(
         session: AuthSession,
         serverAddress: String,

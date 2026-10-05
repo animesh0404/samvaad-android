@@ -377,6 +377,16 @@ class SessionRefresherTest {
                 recoveryCode: String,
             ): DeviceRecord = throw AssertionError("no recovery in this slice")
 
+            override suspend fun beginAttach(
+                session: AuthSession, serverAddress: String, deviceId: String,
+            ): com.samvaad.android.enroll.AttachBegin =
+                throw AssertionError("no attach in this slice")
+
+            override suspend fun completeAttach(
+                session: AuthSession, serverAddress: String, deviceId: String,
+                challengeId: String, proofBase64: String,
+            ): DeviceRecord = throw AssertionError("no attach in this slice")
+
             override suspend fun recoverEnroll(
                 session: AuthSession, serverAddress: String, recoveryCode: String,
                 request: EnrollRequest,

@@ -116,9 +116,25 @@ class RealtimeIngestTest {
             throw AssertionError("no approval here")
 
         override suspend fun bindDevice(
-            session: AuthSession, serverAddress: String, deviceId: String, recoveryCode: String,
+            session: AuthSession, serverAddress: String, deviceId: String,             recoveryCode: String,
         ): com.samvaad.android.enroll.DeviceRecord =
             throw AssertionError("no recovery here")
+
+        override suspend fun beginAttach(
+            session: AuthSession,
+            serverAddress: String,
+            deviceId: String,
+        ): com.samvaad.android.enroll.AttachBegin =
+            throw AssertionError("no attach here")
+
+        override suspend fun completeAttach(
+            session: AuthSession,
+            serverAddress: String,
+            deviceId: String,
+            challengeId: String,
+            proofBase64: String,
+        ): com.samvaad.android.enroll.DeviceRecord =
+            throw AssertionError("no attach here")
 
         override suspend fun recoverEnroll(
             session: AuthSession, serverAddress: String, recoveryCode: String,

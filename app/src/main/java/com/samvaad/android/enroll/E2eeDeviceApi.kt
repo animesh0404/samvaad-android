@@ -123,6 +123,56 @@ interface E2eeDeviceApi {
     ): DeviceRecord
 
     /**
+     * POST /api/e2ee/devices/{deviceId}/attach/begin (empty body).
+     * Starts the proof-of-possession handshake that binds the current
+     * session to an already-enrolled owned ACTIVE device. Consumes no
+     * recovery code and creates no device.
+     *
+     * [AttachBegin.AlreadyBound] is the idempotent success when the
+     * session is already bound to [deviceId] — no cryptography needed.
+     * Otherwise the server returns a single-use challenge for
+     * [completeAttach].
+     *
+     * @throws EnrollException.Conflict session bound to a different
+     * device, or target inactive (both 409 — converge through
+     * [listDevices], never blind-retry).
+     * @throws EnrollException.ServerRejected not the owner (403).
+     * @throws EnrollException.NotFound unknown device id (404).
+     */
+    @Throws(IOException::class)
+    suspend fun beginAttach(
+        session: AuthSession,
+        serverAddress: String,
+        deviceId: String,
+    ): AttachBegin
+
+    /**
+     * POST /api/e2ee/devices/{deviceId}/attach/complete with
+     * `{"challengeId": ..., "proof": ...}`.
+     *
+     * The proof is SHA-256 over the domain-separated X25519 shared
+     * secret, device id, and session id (see the server `AttachProof`
+     * spec, mirrored byte-for-byte by the crypto adapter). Returns the
+     * bound row (200). The challenge is consumed on success; a mismatch
+     * leaves the session unbound.
+     *
+     * @throws EnrollException.BadRequest unknown/expired/mismatched
+     * challenge (400 — start over with [beginAttach], exactly once).
+     * @throws EnrollException.ServerRejected proof mismatch or not the
+     * owner (403 — surface, never retry the same proof).
+     * @throws EnrollException.Conflict session bound elsewhere, or
+     * target inactive (409 — converge through [listDevices]).
+     */
+    @Throws(IOException::class)
+    suspend fun completeAttach(
+        session: AuthSession,
+        serverAddress: String,
+        deviceId: String,
+        challengeId: String,
+        proofBase64: String,
+    ): DeviceRecord
+
+    /**
      * POST /api/e2ee/recovery/enroll with
      * `{"recoveryCode": ..., "device": {...}}`. Creates a NEW ACTIVE
      * device from fresh public material, consuming one recovery code

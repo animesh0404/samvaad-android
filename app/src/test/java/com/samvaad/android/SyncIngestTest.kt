@@ -113,6 +113,17 @@ class SyncIngestTest {
             session: AuthSession, serverAddress: String, deviceId: String, recoveryCode: String,
         ): DeviceRecord = throw AssertionError("no recovery in this test")
 
+        override suspend fun beginAttach(
+            session: AuthSession, serverAddress: String, deviceId: String,
+        ): com.samvaad.android.enroll.AttachBegin =
+            throw AssertionError("no attach in this test")
+
+        override suspend fun completeAttach(
+            session: AuthSession, serverAddress: String, deviceId: String,
+            challengeId: String, proofBase64: String,
+        ): com.samvaad.android.enroll.DeviceRecord =
+            throw AssertionError("no attach in this test")
+
         override suspend fun recoverEnroll(
             session: AuthSession, serverAddress: String, recoveryCode: String,
             request: EnrollRequest,

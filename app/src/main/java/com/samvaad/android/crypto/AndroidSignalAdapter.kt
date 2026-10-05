@@ -137,6 +137,56 @@ class AndroidSignalAdapter {
     }
 
     /**
+     * Proof-of-possession for the session→device attach handshake (mirrors
+     * the server `AttachProof` spec byte-for-byte):
+     * `SHA-256("samvaad-attach-v1" || X25519(identityPriv,
+     * serverEphemeral) || deviceUuid16 || sessionUuid16)`.
+     *
+     * [serverEphemeralPublicKey] is the raw 32-byte X25519 half from
+     * `attach/begin`; the `0x05` DJB type prefix is applied here because
+     * libsignal parses typed encodings. UUIDs serialize big-endian
+     * most/least bits, matching the server's `ByteBuffer` layout.
+     *
+     * Fail-closed: unknown handle, malformed ephemeral, or missing
+     * private material throws [CryptoRecoveryException] — callers must
+     * surface device state, never retry the same proof.
+     */
+    fun computeAttachProof(
+        identityHandle: SealedHandle,
+        serverEphemeralPublicKey: ByteArray,
+        deviceId: java.util.UUID,
+        sessionId: java.util.UUID,
+    ): ByteArray {
+        requireKind(identityHandle, CryptoRecordKind.IDENTITY)
+        val pair = requireIdentity(identityHandle)
+        if (serverEphemeralPublicKey.size != 32) {
+            throw CryptoRecoveryException("attach ephemeral key must be 32 bytes")
+        }
+        val ephemeral = try {
+            ECPublicKey(byteArrayOf(0x05) + serverEphemeralPublicKey)
+        } catch (e: InvalidKeyException) {
+            throw CryptoRecoveryException("attach ephemeral key malformed", e)
+        }
+        val shared = pair.privateKey.calculateAgreement(ephemeral)
+        return try {
+            val digest = java.security.MessageDigest.getInstance("SHA-256")
+            digest.update("samvaad-attach-v1".toByteArray(Charsets.UTF_8))
+            digest.update(shared)
+            digest.update(uuidBytes(deviceId))
+            digest.update(uuidBytes(sessionId))
+            digest.digest()
+        } finally {
+            Arrays.fill(shared, 0)
+        }
+    }
+
+    private fun uuidBytes(id: java.util.UUID): ByteArray =
+        java.nio.ByteBuffer.allocate(16)
+            .putLong(id.mostSignificantBits)
+            .putLong(id.leastSignificantBits)
+            .array()
+
+    /**
      * Export the canonical libsignal record blob for [handle] — the exact
      * bytes the vault encrypts. Ownership of the returned array transfers
      * to the caller (the vault zeroes it after encryption).

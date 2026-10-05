@@ -61,3 +61,20 @@ data class DeviceList(
     val enrollmentState: String,
     val devices: List<DeviceRecord>,
 )
+
+/**
+ * Session-to-device attach handshake (`POST
+ * /api/e2ee/devices/{deviceId}/attach/begin` +
+ * `.../attach/complete`). [AlreadyBound] is the idempotent success when
+ * the session is already bound to this device — no cryptography involved.
+ * [Challenge] carries the server's ephemeral X25519 public half for the
+ * single proof round; the private half never leaves the server.
+ */
+sealed interface AttachBegin {
+    data class AlreadyBound(val device: DeviceRecord) : AttachBegin
+    data class Challenge(
+        val challengeId: String,
+        val serverEphemeralPublicKey: String,
+        val expiresAt: String?,
+    ) : AttachBegin
+}

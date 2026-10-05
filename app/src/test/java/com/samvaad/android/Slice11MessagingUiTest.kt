@@ -134,6 +134,35 @@ class Slice11MessagingUiTest {
             recoveryCode: String,
         ): DeviceRecord = throw AssertionError("no recovery in this slice")
 
+        override suspend fun beginAttach(
+            session: AuthSession,
+            serverAddress: String,
+            deviceId: String,
+        ): com.samvaad.android.enroll.AttachBegin =
+            // Tests in this slice assume the adopted session is already
+            // bound (steady state); the rebind path has its own tests.
+            com.samvaad.android.enroll.AttachBegin.AlreadyBound(
+                DeviceRecord(
+                    deviceId = deviceId,
+                    registrationId = 4242,
+                    signalDeviceId = 1,
+                    deviceIdentityPublicKey = "aWRlbnRpdHk=",
+                    signedPrekeyId = 1,
+                    deviceRole = "PRIMARY",
+                    status = "ACTIVE",
+                    availablePrekeys = 100,
+                )
+            )
+
+        override suspend fun completeAttach(
+            session: AuthSession,
+            serverAddress: String,
+            deviceId: String,
+            challengeId: String,
+            proofBase64: String,
+        ): com.samvaad.android.enroll.DeviceRecord =
+            throw AssertionError("no attach in this slice")
+
         override suspend fun recoverEnroll(
             session: AuthSession,
             serverAddress: String,
