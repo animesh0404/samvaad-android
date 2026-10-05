@@ -54,6 +54,11 @@ import com.samvaad.android.enroll.FileDeviceMetadataStore
 import com.samvaad.android.enroll.HttpE2eeDeviceApi
 import com.samvaad.android.enroll.RecipientDeviceRecord
 import com.samvaad.android.enroll.RecoveryMode
+import com.samvaad.android.friends.FriendEntry
+import com.samvaad.android.friends.FriendException
+import com.samvaad.android.friends.FriendRequestRecord
+import com.samvaad.android.friends.FriendsApi
+import com.samvaad.android.friends.HttpFriendsApi
 import com.samvaad.android.session.FileSessionMetadataStore
 import com.samvaad.android.session.FileSyncMetadataStore
 import com.samvaad.android.session.HistorySyncCoordinator
@@ -156,6 +161,14 @@ private const val DIRECTORY_FAILED_MESSAGE =
     "Could not load devices. Check the connection and try again."
 private const val SEND_FAILED_MESSAGE =
     "Could not send. Check the connection and try again."
+private const val FRIENDS_FAILED_MESSAGE =
+    "Could not load friends. Check the connection and try again."
+private const val ADD_SELF_MESSAGE =
+    "You cannot add yourself as a friend."
+private const val ALREADY_FRIENDS_MESSAGE =
+    "A request is already waiting, or you are already friends."
+private const val REQUEST_GONE_MESSAGE =
+    "That request is no longer waiting."
 
 /**
  * Slice 11 messaging dependencies. One holder per authenticated screen:
@@ -200,6 +213,12 @@ fun HomeScreen(
      */
     deviceApi: E2eeDeviceApi? = null,
     wrappingKeys: WrappingKeyProvider? = null,
+    /**
+     * Test seam for the Slice 14 friends boundary. Production passes
+     * null and gets the real HTTP client. Kept explicit/nullable like
+     * the other seams (no DI).
+     */
+    friendsApi: FriendsApi? = null,
     onLogout: () -> Unit = {},
     /**
      * Test seam for the Slice 13 realtime socket. Production passes null
@@ -584,6 +603,18 @@ fun HomeScreen(
     var selectedDeviceId by remember { mutableStateOf<String?>(null) }
     var sending by remember { mutableStateOf(false) }
     var sendError by remember { mutableStateOf<String?>(null) }
+    // ---- Slice 14 friends wiring (session-level; needs no device keys) ----
+    val friendsClient = remember(friendsApi) { friendsApi ?: HttpFriendsApi() }
+    var friends by remember { mutableStateOf<List<FriendEntry>?>(null) }
+    var incomingRequests by remember { mutableStateOf<List<FriendRequestRecord>?>(null) }
+    var loadingRoster by remember { mutableStateOf(false) }
+    var rosterError by remember { mutableStateOf<String?>(null) }
+    var addUsername by rememberSaveable { mutableStateOf("") }
+    var sendingFriendRequest by remember { mutableStateOf(false) }
+    var addFriendError by remember { mutableStateOf<String?>(null) }
+    var addFriendSuccess by remember { mutableStateOf<String?>(null) }
+    var respondingRequestId by remember { mutableStateOf<String?>(null) }
+    var respondError by remember { mutableStateOf<String?>(null) }
 
     fun lookupUsername(deviceId: String): String? =
         messaging.sessions.read(deviceId)?.remoteUsername
@@ -852,6 +883,93 @@ fun HomeScreen(
         }
     }
 
+    // ---- Slice 14 friends actions (presentation only; reuse only) ----
+
+    fun refreshRoster() {
+        // Main-thread single-flight like the approval taps.
+        if (loadingRoster) return
+        loadingRoster = true
+        scope.launch {
+            try {
+                friends = friendsClient.listFriends(session, serverAddress)
+                incomingRequests = friendsClient.listIncoming(session, serverAddress)
+                rosterError = null
+            } catch (e: FriendException.Unauthorized) {
+                rosterError = UNAUTHORIZED_MESSAGE
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: IOException) {
+                rosterError = FRIENDS_FAILED_MESSAGE
+            } finally {
+                loadingRoster = false
+            }
+        }
+    }
+
+    fun sendFriendRequest() {
+        val username = addUsername.trim()
+        if (username.isEmpty() || sendingFriendRequest) return
+        sendingFriendRequest = true
+        scope.launch {
+            try {
+                friendsClient.sendRequest(session, serverAddress, username)
+                addUsername = ""
+                addFriendError = null
+                addFriendSuccess = "Request sent to $username."
+                refreshRoster()
+            } catch (e: FriendException.NotFound) {
+                addFriendError = USER_NOT_FOUND_MESSAGE
+                addFriendSuccess = null
+            } catch (e: FriendException.Forbidden) {
+                addFriendError = ADD_SELF_MESSAGE
+                addFriendSuccess = null
+            } catch (e: FriendException.Conflict) {
+                addFriendError = ALREADY_FRIENDS_MESSAGE
+                addFriendSuccess = null
+            } catch (e: FriendException.Unauthorized) {
+                addFriendError = UNAUTHORIZED_MESSAGE
+                addFriendSuccess = null
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: IOException) {
+                addFriendError = FRIENDS_FAILED_MESSAGE
+                addFriendSuccess = null
+            } finally {
+                sendingFriendRequest = false
+            }
+        }
+    }
+
+    fun respondToRequest(requestId: String, accept: Boolean) {
+        // Main-thread single-flight: one accept/reject at a time so a
+        // double tap can never transition the same request twice.
+        if (respondingRequestId != null) return
+        respondingRequestId = requestId
+        scope.launch {
+            try {
+                if (accept) {
+                    friendsClient.acceptRequest(session, serverAddress, requestId)
+                } else {
+                    friendsClient.rejectRequest(session, serverAddress, requestId)
+                }
+                respondError = null
+                refreshRoster()
+            } catch (e: FriendException.Unauthorized) {
+                respondError = UNAUTHORIZED_MESSAGE
+            } catch (e: FriendException.NotFound) {
+                respondError = REQUEST_GONE_MESSAGE
+            } catch (e: FriendException.Conflict) {
+                respondError = REQUEST_GONE_MESSAGE
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: IOException) {
+                respondError = FRIENDS_FAILED_MESSAGE
+            } finally {
+                respondingRequestId = null
+            }
+        }
+    }
+
     val codes = (enrollState as? EnrollUiState.Codes)?.codes
     if (codes != null) {
         RecoveryCodesScreen(codes = codes, onAcknowledge = ::acknowledge)
@@ -997,6 +1115,33 @@ fun HomeScreen(
                             }
                         }
                     }
+                    // Slice 14 friends: session-level only (no device keys
+                    // needed), so visible in Done even on handle-less
+                    // installs. Accepting here unblocks the composer below.
+                    LaunchedEffect(Unit) {
+                        refreshRoster()
+                    }
+                    FriendsSection(
+                        friends = friends,
+                        incoming = incomingRequests,
+                        loadingRoster = loadingRoster,
+                        rosterError = rosterError,
+                        onRefreshRoster = ::refreshRoster,
+                        addUsername = addUsername,
+                        onAddUsernameChange = {
+                            addUsername = it
+                            addFriendError = null
+                            addFriendSuccess = null
+                        },
+                        sendingRequest = sendingFriendRequest,
+                        addFriendError = addFriendError,
+                        addFriendSuccess = addFriendSuccess,
+                        onSendRequest = ::sendFriendRequest,
+                        respondingRequestId = respondingRequestId,
+                        respondError = respondError,
+                        onAccept = { respondToRequest(it, accept = true) },
+                        onReject = { respondToRequest(it, accept = false) },
+                    )
                     // Slice 11 messaging is available only with local
                     // crypto handles. Handle-less ("Device bound") installs
                     // stay fail-closed: no list, no composer, no sync.

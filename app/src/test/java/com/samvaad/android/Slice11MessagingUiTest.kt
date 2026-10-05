@@ -39,6 +39,9 @@ import com.samvaad.android.enroll.OneTimePrekeyUpload
 import com.samvaad.android.enroll.RecipientDeviceRecord
 import com.samvaad.android.enroll.SubmitMessageResult
 import com.samvaad.android.enroll.SyncCursor
+import com.samvaad.android.friends.FriendEntry
+import com.samvaad.android.friends.FriendRequestRecord
+import com.samvaad.android.friends.FriendsApi
 import com.samvaad.android.session.EstablishedVia
 import com.samvaad.android.session.FileSessionMetadataStore
 import com.samvaad.android.session.SignalSessionEntry
@@ -347,6 +350,55 @@ class Slice11MessagingUiTest {
         kyberPrekeySignature = f.kyberSigB64,
     )
 
+    private class FakeFriends : FriendsApi {
+        // Slice 14 boundary stays hermetic here: roster loads empty, no
+        // network is touched for rendering.
+        override suspend fun lookupUser(
+            session: AuthSession,
+            serverAddress: String,
+            username: String,
+        ): FriendEntry = throw AssertionError("no lookup in this slice")
+
+        override suspend fun sendRequest(
+            session: AuthSession,
+            serverAddress: String,
+            username: String,
+        ): FriendRequestRecord = throw AssertionError("no friend requests in this slice")
+
+        override suspend fun listIncoming(
+            session: AuthSession,
+            serverAddress: String,
+        ): List<FriendRequestRecord> = emptyList()
+
+        override suspend fun listOutgoing(
+            session: AuthSession,
+            serverAddress: String,
+        ): List<FriendRequestRecord> = emptyList()
+
+        override suspend fun acceptRequest(
+            session: AuthSession,
+            serverAddress: String,
+            requestId: String,
+        ): FriendRequestRecord = throw AssertionError("no friend requests in this slice")
+
+        override suspend fun rejectRequest(
+            session: AuthSession,
+            serverAddress: String,
+            requestId: String,
+        ): FriendRequestRecord = throw AssertionError("no friend requests in this slice")
+
+        override suspend fun cancelRequest(
+            session: AuthSession,
+            serverAddress: String,
+            requestId: String,
+        ): FriendRequestRecord = throw AssertionError("no friend requests in this slice")
+
+        override suspend fun listFriends(
+            session: AuthSession,
+            serverAddress: String,
+        ): List<FriendEntry> = emptyList()
+    }
+
     private fun launch(): EnrollmentCoordinator {
         val coordinator = EnrollmentCoordinator(
             api = api,
@@ -363,6 +415,7 @@ class Slice11MessagingUiTest {
                     coordinator = coordinator,
                     deviceApi = api,
                     wrappingKeys = keys,
+                    friendsApi = FakeFriends(),
                 )
             }
         }
@@ -435,6 +488,7 @@ class Slice11MessagingUiTest {
         sealLocalDevice()
         launch()
         waitFor("Conversations", substring = false)
+        composeTestRule.onNodeWithText("No conversations yet.").performScrollTo()
         composeTestRule.onNodeWithText("No conversations yet.").assertIsDisplayed()
     }
 
@@ -446,6 +500,7 @@ class Slice11MessagingUiTest {
         launch()
         // No network is touched for rendering: every FakeApi method throws.
         waitFor("bob", substring = false)
+        composeTestRule.onNodeWithText("second-ui").performScrollTo()
         composeTestRule.onNodeWithText("second-ui").assertIsDisplayed()
     }
 
@@ -455,14 +510,17 @@ class Slice11MessagingUiTest {
         seedInbound("conv-1", "m-1", 1L, "bob-dev-1", "detail-ui")
         launch()
         waitFor("bob", substring = false)
+        composeTestRule.onNodeWithText("bob").performScrollTo()
         composeTestRule.onNodeWithText("bob").performClick()
         waitFor("detail-ui", substring = false)
+        composeTestRule.onNodeWithText("detail-ui").performScrollTo()
         composeTestRule.onNodeWithText("detail-ui").assertIsDisplayed()
         composeTestRule.onNodeWithText("Back").performScrollTo()
         composeTestRule.onNodeWithText("Back").performClick()
         waitFor("Conversations", substring = false)
         // The row preview proves the list is back (the peer label also
         // fills the composer prefill, so it is ambiguous by design).
+        composeTestRule.onNodeWithText("detail-ui").performScrollTo()
         composeTestRule.onNodeWithText("detail-ui").assertIsDisplayed()
     }
 
@@ -477,6 +535,7 @@ class Slice11MessagingUiTest {
         composeTestRule.onNodeWithText("Sync").performClick()
         waitFor("Sync had partial failures", substring = true)
         // Existing durable rows stay rendered.
+        composeTestRule.onNodeWithText("kept-ui").performScrollTo()
         composeTestRule.onNodeWithText("kept-ui").assertIsDisplayed()
     }
 

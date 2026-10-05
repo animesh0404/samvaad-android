@@ -20,6 +20,9 @@ import com.samvaad.android.enroll.EnrollResult
 import com.samvaad.android.enroll.EnrollmentCoordinator
 import com.samvaad.android.enroll.FileDeviceMetadataStore
 import com.samvaad.android.enroll.OneTimePrekeyUpload
+import com.samvaad.android.friends.FriendEntry
+import com.samvaad.android.friends.FriendRequestRecord
+import com.samvaad.android.friends.FriendsApi
 import com.samvaad.android.ui.theme.SamvaadTheme
 import java.io.File
 import javax.crypto.KeyGenerator
@@ -229,6 +232,55 @@ class Slice10UiTest {
         metadata = FileDeviceMetadataStore(context)
     }
 
+    private class FakeFriends : FriendsApi {
+        // Slice 14 boundary stays hermetic here: roster loads empty, no
+        // network is touched for rendering.
+        override suspend fun lookupUser(
+            session: AuthSession,
+            serverAddress: String,
+            username: String,
+        ): FriendEntry = throw AssertionError("no lookup in this slice")
+
+        override suspend fun sendRequest(
+            session: AuthSession,
+            serverAddress: String,
+            username: String,
+        ): FriendRequestRecord = throw AssertionError("no friend requests in this slice")
+
+        override suspend fun listIncoming(
+            session: AuthSession,
+            serverAddress: String,
+        ): List<FriendRequestRecord> = emptyList()
+
+        override suspend fun listOutgoing(
+            session: AuthSession,
+            serverAddress: String,
+        ): List<FriendRequestRecord> = emptyList()
+
+        override suspend fun acceptRequest(
+            session: AuthSession,
+            serverAddress: String,
+            requestId: String,
+        ): FriendRequestRecord = throw AssertionError("no friend requests in this slice")
+
+        override suspend fun rejectRequest(
+            session: AuthSession,
+            serverAddress: String,
+            requestId: String,
+        ): FriendRequestRecord = throw AssertionError("no friend requests in this slice")
+
+        override suspend fun cancelRequest(
+            session: AuthSession,
+            serverAddress: String,
+            requestId: String,
+        ): FriendRequestRecord = throw AssertionError("no friend requests in this slice")
+
+        override suspend fun listFriends(
+            session: AuthSession,
+            serverAddress: String,
+        ): List<FriendEntry> = emptyList()
+    }
+
     private fun launch(): EnrollmentCoordinator {
         val coordinator = EnrollmentCoordinator(
             api = api,
@@ -243,6 +295,7 @@ class Slice10UiTest {
                     session = session,
                     serverAddress = "https://example.test:8080",
                     coordinator = coordinator,
+                    friendsApi = FakeFriends(),
                 )
             }
         }
@@ -436,7 +489,11 @@ class Slice10UiTest {
         // and the limitation must be explained without claiming the keys.
         composeTestRule.onNodeWithText("Device ready").assertDoesNotExist()
         composeTestRule.onNodeWithText("not present here", substring = true)
+            .performScrollTo()
+        composeTestRule.onNodeWithText("not present here", substring = true)
             .assertIsDisplayed()
+        composeTestRule.onNodeWithText("recover as a new device", substring = true)
+            .performScrollTo()
         composeTestRule.onNodeWithText("recover as a new device", substring = true)
             .assertIsDisplayed()
         assertEquals(target.deviceId, metadata.readAdopted()!!.deviceId)
