@@ -4,10 +4,12 @@
 
   Trusts exactly one certificate — the public self-signed leaf exported
   from the development server (see src/debug/res/raw/...) — and ONLY for
-  the LAN development host 192.168.1.41. Hostname/IP verification still
-  applies normally: the connection host must match a certificate SAN, so
-  the server certificate must carry IP:192.168.1.41 (plus the default
-  DNS:localhost / IP:127.0.0.1 SANs).
+  the LAN development host 192.168.1.41 and for loopback
+  (127.0.0.1, used with `adb reverse` USB forwarding so physical
+  devices never depend on WiFi routing). Hostname/IP verification
+  still applies normally: the connection host must match a certificate
+  SAN, so the server certificate must carry IP:192.168.1.41 (plus the
+  default DNS:localhost / IP:127.0.0.1 SANs).
 
   This file lives in the DEBUG source set, so release builds never see
   this trust anchor and keep Android's normal platform trust store and
@@ -22,6 +24,7 @@
 <network-security-config>
   <domain-config cleartextTrafficPermitted="false">
     <domain includeSubdomains="false">192.168.1.41</domain>
+    <domain includeSubdomains="false">127.0.0.1</domain>
     <trust-anchors>
       <certificates src="@raw/samvaad_dev_192_168_1_41" />
       <certificates src="system" />
