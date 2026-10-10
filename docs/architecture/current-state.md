@@ -9,14 +9,19 @@ This document describes the Android repository as it exists now. It does not des
 - Single Android application module (`:app`), package/application ID `com.samvaad.android`.
 - Kotlin + Jetpack Compose + Material 3.
 - `MainActivity : ComponentActivity` launches the Compose content.
-- `SamvaadTheme` provides the generated Material 3 theme with dynamic color on Android 12+.
+- `SamvaadTheme` provides the Material 3 theme. The Samvaad semantic
+  brand palette (deep teal primary, warm sand-tinted light surfaces,
+  teal-ink dark surfaces) is authoritative as of Slice B; the Android
+  dynamic-color path remains implemented behind a non-default
+  `dynamicColor` flag so it can be reintroduced if required.
 - One launcher activity is declared in the manifest.
 - Gradle Kotlin DSL with version catalog.
 - AGP `9.4.1`, Kotlin `2.2.10`, Compose BOM `2026.02.01`, Gradle `9.6.0`.
 - `minSdk 30`, `compileSdk 37`, `targetSdk 37`.
 - The unauthenticated UI is the Samvaad entry screen with server address, username, password, and Continue action. The authenticated Home surface now includes enrollment/approval/recovery state plus the Slice 11 conversation/history presentation. Input and presentation values remain local Compose UI state.
 - Authentication uses `POST /api/auth/login` with `clientPlatform: "ANDROID"` over HTTPS. The live `AuthSession` remains an in-memory runtime object while its refresh bundle is sealed for restart recovery by the Slice 5 session store.
-- The authenticated root uses `SessionGate` to restore the durable refresh session and routes between login and the authenticated Home boundary without a navigation framework.
+- The authenticated root uses `SessionGate` to restore the durable refresh session and routes between login and the authenticated app shell.
+- The authenticated shell (`SamvaadAppShell`, Slice B) owns navigation with Navigation 3 (`androidx.navigation3 1.2.0`): top-level Chats/Friends/Settings destinations behind a `NavigationBar`, plus a `ChatDetail(conversationId)` destination with unified system/UI back. Destination content reuses the existing `HomeScreen` feature logic through section slices; no ViewModel/DI framework was introduced.
 - Host UI/unit tests cover the entry/auth/session boundaries with fakes and deterministic synchronization.
 - The bootstrap has been verified to build and launch on a Pixel 6a API 33 emulator.
 - Local-only libsignal feasibility spike (ADR 0003): `AndroidSignalAdapter` isolates `org.signal:libsignal-*` 0.86.5 and proves in-memory generation and parsing/verification of identity, signed-prekey, Kyber, and OTPK material on emulator and physical Pixel 6a. The AGPL distribution decision remains outstanding.

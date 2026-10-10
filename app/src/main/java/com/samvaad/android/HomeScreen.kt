@@ -39,6 +39,7 @@ import com.samvaad.android.crypto.MessageContentSealer
 import com.samvaad.android.crypto.VaultException
 import com.samvaad.android.crypto.WrappingKeyProvider
 import com.samvaad.android.db.MessageDatabase
+import com.samvaad.android.db.MessageDirection
 import com.samvaad.android.db.MessageEntity
 import com.samvaad.android.enroll.ApprovalLoad
 import com.samvaad.android.enroll.ApprovalView
@@ -74,6 +75,8 @@ import com.samvaad.android.session.SessionEstablishResult
 import com.samvaad.android.session.SessionMetadataStore
 import com.samvaad.android.session.SessionRefresher
 import com.samvaad.android.session.SessionStore
+import com.samvaad.android.ui.navigation.HomeSection
+import com.samvaad.android.ui.shell.SettingsSection
 import com.samvaad.android.ui.theme.SamvaadTheme
 import java.io.IOException
 import java.util.concurrent.atomic.AtomicBoolean
@@ -174,6 +177,8 @@ private const val ALREADY_FRIENDS_MESSAGE =
     "A request is already waiting, or you are already friends."
 private const val REQUEST_GONE_MESSAGE =
     "That request is no longer waiting."
+private const val CANCEL_FAILED_MESSAGE =
+    "Could not cancel the request. Check the connection and try again."
 
 /**
  * Slice 11 messaging dependencies. One holder per authenticated screen:
@@ -234,6 +239,20 @@ fun HomeScreen(
         java.net.URI,
         RealtimeInbox.SocketEvents,
     ) -> RealtimeInbox.RealtimeSocket)? = null,
+    /**
+     * Slice B navigation sectioning. [HomeSection.Full] (default)
+     * preserves the exact pre-Nav3 rendering. Sectioned modes render one
+     * slice each; with [externalNav] the shell owns navigation and this
+     * screen delegates open/close/send-target transitions through
+     * [onOpenConversation]/[onCloseConversation] instead of its internal
+     * selection state and BackHandler.
+     */
+    section: HomeSection = HomeSection.Full,
+    /** Route identity for [HomeSection.Detail]; ignored otherwise. */
+    detailConversationId: String? = null,
+    externalNav: Boolean = false,
+    onOpenConversation: (String) -> Unit = {},
+    onCloseConversation: () -> Unit = {},
 ) {
     val context = LocalContext.current.applicationContext
     // Explicit construction (no DI): one coordinator per composition.
@@ -620,6 +639,12 @@ fun HomeScreen(
     var addFriendSuccess by remember { mutableStateOf<String?>(null) }
     var respondingRequestId by remember { mutableStateOf<String?>(null) }
     var respondError by remember { mutableStateOf<String?>(null) }
+    // ---- Slice D outgoing + message-CTA state (presentation only) ----
+    var outgoingRequests by remember { mutableStateOf<List<FriendRequestRecord>?>(null) }
+    var cancellingRequestId by remember { mutableStateOf<String?>(null) }
+    var cancelError by remember { mutableStateOf<String?>(null) }
+    var resolvingMessageUsername by remember { mutableStateOf<String?>(null) }
+    var messageHint by remember { mutableStateOf<String?>(null) }
 
     fun lookupUsername(deviceId: String): String? =
         messaging.sessions.read(deviceId)?.remoteUsername
@@ -694,6 +719,14 @@ fun HomeScreen(
     }
 
     fun openConversation(conversationId: String) {
+        if (externalNav) {
+            // Shell-owned navigation: the Detail destination mounts its
+            // own section and loads the conversation itself. Composer
+            // prefill is skipped — draft state is per-mount until a later
+            // slice hoists it above the destinations.
+            onOpenConversation(conversationId)
+            return
+        }
         selectedConversationId = conversationId
         detailMessages = null
         detailLoadError = null
@@ -713,6 +746,10 @@ fun HomeScreen(
     }
 
     fun closeConversation() {
+        if (externalNav) {
+            onCloseConversation()
+            return
+        }
         selectedConversationId = null
         detailMessages = null
         detailLoadError = null
@@ -909,17 +946,22 @@ fun HomeScreen(
                             is SendResult.Sent -> {
                                 composerDraft = ""
                                 sendError = null
-                                selectedConversationId = sent.conversationId
-                                loadConversations()
-                                loadDetail(sent.conversationId)
+                                if (externalNav) {
+                                    loadConversations()
+                                    onOpenConversation(sent.conversationId)
+                                } else {
+                                    selectedConversationId = sent.conversationId
+                                    loadConversations()
+                                    loadDetail(sent.conversationId)
+                                }
                             }
                             is SendResult.Failed -> {
                                 // The durable row (if any) is reloaded below;
                                 // the live retry handle is intentionally not
                                 // kept: Sync recovers durable rows instead.
                                 sendError = sendFailureMessage(sent.kind)
-                                loadConversations()
-                                selectedConversationId?.let { loadDetail(it) }
+                loadConversations()
+                (selectedConversationId ?: detailConversationId)?.let { loadDetail(it) }
                             }
                         }
                     }
@@ -946,6 +988,7 @@ fun HomeScreen(
             try {
                 friends = friendsClient.listFriends(session, serverAddress)
                 incomingRequests = friendsClient.listIncoming(session, serverAddress)
+                outgoingRequests = friendsClient.listOutgoing(session, serverAddress)
                 rosterError = null
             } catch (e: FriendException.Unauthorized) {
                 rosterError = UNAUTHORIZED_MESSAGE
@@ -1023,6 +1066,451 @@ fun HomeScreen(
         }
     }
 
+    /**
+     * Slice D outgoing cancellation (presentation only; reuse only).
+     * Sender-only `cancelRequest` from the existing [FriendsApi]
+     * boundary: single-flight like accept/reject, row retained on
+     * failure with a surfaced error, re-list on success so the row
+     * disappears through the same state flow as accept/reject.
+     */
+    fun cancelFriendRequest(requestId: String) {
+        // Main-thread single-flight: concurrent cancels never race.
+        if (cancellingRequestId != null) return
+        cancellingRequestId = requestId
+        scope.launch {
+            try {
+                friendsClient.cancelRequest(session, serverAddress, requestId)
+                cancelError = null
+                refreshRoster()
+            } catch (e: FriendException.Unauthorized) {
+                cancelError = UNAUTHORIZED_MESSAGE
+            } catch (e: FriendException.NotFound) {
+                // Stale row: converge by re-listing so it disappears.
+                cancelError = REQUEST_GONE_MESSAGE
+                refreshRoster()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: IOException) {
+                cancelError = CANCEL_FAILED_MESSAGE
+            } finally {
+                cancellingRequestId = null
+            }
+        }
+    }
+
+    /**
+     * Slice D message CTA resolution (read-only reuse, no new queries).
+     *
+     * [FriendEntry] carries no conversation ID and no new endpoint may
+     * serve UI convenience, so the conversation is resolved from durable
+     * local state with the exact peer mapping the Chats loader uses:
+     * each known conversation's sample row names its remote device, and
+     * session metadata names that device's username. The most recent
+     * (highest-sequence) match wins. Null when this friend has no local
+     * conversation yet — the caller says so instead of fabricating an ID.
+     */
+    suspend fun resolveConversationFor(username: String): String? =
+        withContext(Dispatchers.IO) {
+            val dao = messaging.db.messageDao()
+            var best: String? = null
+            var bestSequence = -1L
+            for (conversationId in dao.knownConversationIds()) {
+                if (conversationId.isEmpty()) continue
+                val max = dao.sequencesFor(conversationId).maxOrNull() ?: continue
+                if (max <= bestSequence) continue
+                val sample = dao.historyPage(conversationId, 0, 1).firstOrNull()
+                    ?: continue
+                val remoteDeviceId = if (sample.direction == MessageDirection.OUT) {
+                    sample.recipientDeviceId
+                } else {
+                    sample.senderDeviceId
+                }
+                val peer = messaging.sessions.read(remoteDeviceId)?.remoteUsername
+                if (peer.equals(username, ignoreCase = true)) {
+                    best = conversationId
+                    bestSequence = max
+                }
+            }
+            best
+        }
+
+    /**
+     * Slice D Message action: navigate through the existing conversation
+     * route only when a durable conversation resolves. External
+     * navigation delegates through [onOpenConversation] exactly like list
+     * taps; Full (legacy) mode reuses the internal selection path.
+     */
+    fun messageFriend(username: String) {
+        if (resolvingMessageUsername != null) return
+        resolvingMessageUsername = username
+        messageHint = null
+        scope.launch {
+            try {
+                val conversationId = resolveConversationFor(username)
+                if (conversationId == null) {
+                    messageHint = "No conversation with $username yet. " +
+                        "Send them a message from Chats to start one."
+                } else if (externalNav) {
+                    onOpenConversation(conversationId)
+                } else {
+                    openConversation(conversationId)
+                }
+            } finally {
+                resolvingMessageUsername = null
+            }
+        }
+    }
+
+    // ---- Slice B navigation sections ----
+    //
+    // Presentation slicing only: these local renderers move the existing
+    // Done-branch blocks verbatim so Navigation 3 destinations show one
+    // slice each. No logic, ordering, or lifecycle changes.
+
+    @Composable
+    fun DeviceStatusHeader(label: String, codesAcknowledged: Boolean, hasLocalKeys: Boolean) {
+        // Bind-recovered installs hold no local private material
+        // (bind accepts none): report the bound state honestly
+        // instead of claiming full messaging readiness. Missing
+        // metadata defaults to the normal message; only a
+        // present-but-handle-less record qualifies it.
+        if (hasLocalKeys) {
+            Text(text = "Device ready ($label)")
+        } else {
+            Text(text = "Device bound ($label)")
+            Text(
+                text = "This installation is bound to the existing " +
+                    "server device, but its private messaging keys " +
+                    "are not present here, so messaging remains " +
+                    "unavailable on this installation. To enable " +
+                    "messaging here, recover as a new device.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        if (!codesAcknowledged) {
+            Text(
+                text = "Recovery codes were not confirmed. " +
+                    "A future update will let you rotate them.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.error
+            )
+        }
+    }
+
+    @Composable
+    fun ApprovalBlock() {
+        when (val approvalState = approval) {
+            null -> {
+                Button(onClick = ::refreshApproval) {
+                    Text("Review pending devices")
+                }
+            }
+            ApprovalUi.Loading -> {
+                CircularProgressIndicator(modifier = Modifier.size(32.dp))
+            }
+            is ApprovalUi.Ready -> {
+                val view = approvalState.view
+                if (!view.selfActive) {
+                    Text(
+                        text = APPROVAL_INACTIVE_MESSAGE,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                } else if (view.pending.isEmpty()) {
+                    Text(
+                        text = APPROVAL_NONE_MESSAGE,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                } else {
+                    view.pending.forEach { device ->
+                        Text(
+                            text = "Pending device (${device.deviceRole} · #${device.signalDeviceId})",
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                        val busy = approvingId != null
+                        Button(
+                            onClick = { approve(device.deviceId) },
+                            enabled = !busy,
+                        ) {
+                            Text(
+                                if (approvingId == device.deviceId) {
+                                    "Approving…"
+                                } else {
+                                    "Approve"
+                                }
+                            )
+                        }
+                    }
+                }
+                TextButton(onClick = ::refreshApproval) {
+                    Text("Refresh")
+                }
+            }
+            is ApprovalUi.Failed -> {
+                Text(
+                    text = approvalState.message,
+                    color = MaterialTheme.colorScheme.error
+                )
+                TextButton(onClick = ::refreshApproval) {
+                    Text("Retry")
+                }
+            }
+            is ApprovalUi.Approved -> {
+                Text(
+                    text = "Device approved (${approvalState.label})",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+                TextButton(onClick = ::refreshApproval) {
+                    Text("Refresh")
+                }
+            }
+        }
+    }
+
+    @Composable
+    fun MessageComposer() {
+        ComposerUi(
+            username = composerUsername,
+            onUsernameChange = {
+                composerUsername = it
+                discoveredDevices = null
+                selectedDeviceId = null
+                directoryError = null
+            },
+            draft = composerDraft,
+            onDraftChange = { composerDraft = it },
+            devices = discoveredDevices,
+            findingDevices = findingDevices,
+            directoryError = directoryError,
+            selectedDeviceId = selectedDeviceId,
+            onFindDevices = ::findDevices,
+            onSelectDevice = { selectedDeviceId = it },
+            sending = sending,
+            sendError = sendError,
+            onSend = ::send,
+        )
+    }
+
+    @Composable
+    fun FriendsContent() {
+        // Slice 14 friends: session-level only (no device keys
+        // needed), so visible in Done even on handle-less
+        // installs. Accepting here unblocks the composer below.
+        LaunchedEffect(Unit) {
+            refreshRoster()
+        }
+        FriendsSection(
+            friends = friends,
+            incoming = incomingRequests,
+            outgoing = outgoingRequests,
+            loadingRoster = loadingRoster,
+            rosterError = rosterError,
+            onRefreshRoster = ::refreshRoster,
+            addUsername = addUsername,
+            onAddUsernameChange = {
+                addUsername = it
+                addFriendError = null
+                addFriendSuccess = null
+            },
+            sendingRequest = sendingFriendRequest,
+            addFriendError = addFriendError,
+            addFriendSuccess = addFriendSuccess,
+            onSendRequest = ::sendFriendRequest,
+            respondingRequestId = respondingRequestId,
+            respondError = respondError,
+            onAccept = { respondToRequest(it, accept = true) },
+            onReject = { respondToRequest(it, accept = false) },
+            cancellingRequestId = cancellingRequestId,
+            cancelError = cancelError,
+            // Inline lambda, not `::cancelFriendRequest`: bound local-fun
+            // references can go stale across recompositions.
+            onCancel = { cancelFriendRequest(it) },
+            resolvingMessageUsername = resolvingMessageUsername,
+            messageHint = messageHint,
+            onMessage = { messageFriend(it) },
+        )
+    }
+
+    @Composable
+    fun FriendsFullContent() {
+        // Full (legacy) scroll host: the same Friends content through
+        // the non-lazy container, since an unbounded LazyColumn would
+        // crash inside the outer scrolled form. Same pieces, same order,
+        // same strings — only the container differs.
+        LaunchedEffect(Unit) {
+            refreshRoster()
+        }
+        FriendsColumn(
+            friends = friends,
+            incoming = incomingRequests,
+            outgoing = outgoingRequests,
+            loadingRoster = loadingRoster,
+            rosterError = rosterError,
+            onRefreshRoster = ::refreshRoster,
+            addUsername = addUsername,
+            onAddUsernameChange = {
+                addUsername = it
+                addFriendError = null
+                addFriendSuccess = null
+            },
+            sendingRequest = sendingFriendRequest,
+            addFriendError = addFriendError,
+            addFriendSuccess = addFriendSuccess,
+            onSendRequest = ::sendFriendRequest,
+            respondingRequestId = respondingRequestId,
+            respondError = respondError,
+            onAccept = { respondToRequest(it, accept = true) },
+            onReject = { respondToRequest(it, accept = false) },
+            cancellingRequestId = cancellingRequestId,
+            cancelError = cancelError,
+            // Inline lambda, not `::cancelFriendRequest` (see above).
+            onCancel = { cancelFriendRequest(it) },
+            resolvingMessageUsername = resolvingMessageUsername,
+            messageHint = messageHint,
+            onMessage = { messageFriend(it) },
+        )
+    }
+
+    @Composable
+    fun ChatsContent(listOnly: Boolean) {
+        // Slice 11 messaging is available only with local
+        // crypto handles. Handle-less ("Device bound") installs
+        // stay fail-closed: no list, no composer, no sync.
+        // Callers gate on hasLocalKeys before invoking.
+        LaunchedEffect(Unit) {
+            loadConversations()
+        }
+        val openId = if (listOnly) null else selectedConversationId
+        if (openId == null) {
+            ConversationListUi(
+                conversations = conversations,
+                loadError = conversationsLoadError,
+                onRetryLoad = {
+                    scope.launch { loadConversations() }
+                },
+                syncing = syncing,
+                syncError = syncError,
+                onSync = ::sync,
+                // Inline lambda, not `::openConversation`: bound local-fun
+                // references can go stale across recompositions.
+                onSelect = { openConversation(it) },
+            )
+            MessageComposer()
+        } else {
+            // Internal back handling only in Full mode; the shell
+            // owns back when externalNav routes through Nav3.
+            if (!externalNav) {
+                BackHandler {
+                    closeConversation()
+                }
+            }
+            ConversationDetailUi(
+                peerLabel = detailPeer.ifEmpty { openId },
+                messages = detailMessages,
+                loadError = detailLoadError,
+                onRetryLoad = {
+                    scope.launch { loadDetail(openId) }
+                },
+                syncing = syncing,
+                syncError = syncError,
+                // Inline lambda, not `::closeConversation` (see above).
+                onBack = { closeConversation() },
+                onSync = ::sync,
+                composer = { MessageComposer() },
+            )
+        }
+    }
+
+    @Composable
+    fun ChatsSectionContent() {
+        // Slice C full-bleed list: same loader contract as ChatsContent
+        // (initial load, retry, sync, external-nav open), but the new
+        // lazy ChatsScreen replaces the legacy scrolled list. Presence
+        // and ordering of status/approval/composer are unchanged; the
+        // caller gates on hasLocalKeys before invoking (fail-closed, as
+        // before).
+        LaunchedEffect(Unit) {
+            loadConversations()
+        }
+        ChatsScreen(
+            conversations = conversations,
+            loadError = conversationsLoadError,
+            onRetryLoad = {
+                scope.launch { loadConversations() }
+            },
+            syncing = syncing,
+            syncError = syncError,
+            onSync = ::sync,
+            // Inline lambda, not `::openConversation`: bound local-fun
+            // references can go stale across recompositions.
+            onSelect = { openConversation(it) },
+            composer = { MessageComposer() },
+        )
+    }
+
+    @Composable
+    fun DetailSectionContent(conversationId: String) {
+        // Slice E full-bleed conversation: same loader contract as
+        // DetailContent (load, retry, sync, external-nav close), but the
+        // lazy ChatDetailScreen replaces the legacy scrolled detail.
+        // Presence of the composer and close routing are unchanged.
+        LaunchedEffect(conversationId) {
+            loadDetail(conversationId)
+        }
+        ChatDetailScreen(
+            peerLabel = detailPeer.ifEmpty { conversationId },
+            messages = detailMessages,
+            loadError = detailLoadError,
+            onRetryLoad = {
+                scope.launch { loadDetail(conversationId) }
+            },
+            syncing = syncing,
+            syncError = syncError,
+            onSync = ::sync,
+            composer = { MessageComposer() },
+        )
+    }
+
+    @Composable
+    fun DetailContent(conversationId: String) {
+        LaunchedEffect(conversationId) {
+            loadDetail(conversationId)
+        }
+        ConversationDetailUi(
+            peerLabel = detailPeer.ifEmpty { conversationId },
+            messages = detailMessages,
+            loadError = detailLoadError,
+            onRetryLoad = {
+                scope.launch { loadDetail(conversationId) }
+            },
+            syncing = syncing,
+            syncError = syncError,
+            // Inline lambda, not `::closeConversation` (see above).
+            onBack = { closeConversation() },
+            onSync = ::sync,
+            composer = { MessageComposer() },
+            showBack = !externalNav,
+        )
+    }
+
+    @Composable
+    fun SettingsContent() {
+        // Slice F: account/device/session rendering from state this
+        // screen already owns. The adopted record is read once here
+        // (cheap file read) and passed down; rows never touch storage.
+        // Logout keeps the existing guarded flow untouched.
+        SettingsSection(
+            identifier = identifier,
+            serverAddress = serverAddress,
+            adopted = bootstrap.adoptedSummary(),
+            // Inline lambda, not `::doLogout`: bound local-fun
+            // references can go stale across recompositions.
+            onLogout = { doLogout() },
+        )
+    }
+
     val codes = (enrollState as? EnrollUiState.Codes)?.codes
     if (codes != null) {
         RecoveryCodesScreen(codes = codes, onAcknowledge = ::acknowledge)
@@ -1030,25 +1518,42 @@ fun HomeScreen(
     }
 
     Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
+        // Slice C: the Done Chats destination is full-bleed — its lazy
+        // list needs bounded height, so the legacy scrolled-form layout
+        // (logo header, 24dp padding, outer scroll) applies to every
+        // other state and section. Enrollment/security states render
+        // pixel-identical to before.
+        // Slice D extends the Slice C treatment to Friends: both
+        // destinations own lazy lists that need bounded height.
+        // Slice E extends it to Chat Detail for the same reason.
+        // Slice F extends it to Settings, which scrolls itself.
+        val fullBleedList = (section == HomeSection.Chats ||
+            section == HomeSection.Friends ||
+            section == HomeSection.Detail ||
+            section == HomeSection.Settings) &&
+            enrollState is EnrollUiState.Done
+        val formScroll = rememberScrollState()
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding)
-                .verticalScroll(rememberScrollState())
-                .padding(24.dp),
+                .then(if (fullBleedList) Modifier else Modifier.verticalScroll(formScroll))
+                .padding(if (fullBleedList) 0.dp else 24.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Image(
-                painter = painterResource(R.drawable.samvaad_logo),
-                contentDescription = "Samvaad logo",
-                modifier = Modifier.size(96.dp)
-            )
-            Text(
-                text = "Samvaad",
-                style = MaterialTheme.typography.headlineMedium
-            )
-            Text(text = "Signed in as $identifier")
+            if (!fullBleedList) {
+                Image(
+                    painter = painterResource(R.drawable.samvaad_logo),
+                    contentDescription = "Samvaad logo",
+                    modifier = Modifier.size(96.dp)
+                )
+                Text(
+                    text = "Samvaad",
+                    style = MaterialTheme.typography.headlineMedium
+                )
+                Text(text = "Signed in as $identifier")
+            }
             when (val state = enrollState) {
                 is EnrollUiState.Idle -> {
                     Text(
@@ -1073,192 +1578,43 @@ fun HomeScreen(
                     )
                 }
                 is EnrollUiState.Done -> {
-                    // Bind-recovered installs hold no local private material
-                    // (bind accepts none): report the bound state honestly
-                    // instead of claiming full messaging readiness. Missing
-                    // metadata defaults to the normal message; only a
-                    // present-but-handle-less record qualifies it.
                     val hasLocalKeys = bootstrap.adoptedSummary()?.hasLocalKeys != false
-                    if (hasLocalKeys) {
-                        Text(text = "Device ready (${state.label})")
-                    } else {
-                        Text(text = "Device bound (${state.label})")
-                        Text(
-                            text = "This installation is bound to the existing " +
-                                "server device, but its private messaging keys " +
-                                "are not present here, so messaging remains " +
-                                "unavailable on this installation. To enable " +
-                                "messaging here, recover as a new device.",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                    if (!state.codesAcknowledged) {
-                        Text(
-                            text = "Recovery codes were not confirmed. " +
-                                "A future update will let you rotate them.",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.error
-                        )
-                    }
-                    when (val approvalState = approval) {
-                        null -> {
-                            Button(onClick = ::refreshApproval) {
-                                Text("Review pending devices")
+                    when (section) {
+                        HomeSection.Full -> {
+                            DeviceStatusHeader(state.label, state.codesAcknowledged, hasLocalKeys)
+                            ApprovalBlock()
+                            FriendsFullContent()
+                            if (hasLocalKeys) ChatsContent(listOnly = false)
+                        }
+                        HomeSection.Chats -> {
+                            DeviceStatusHeader(state.label, state.codesAcknowledged, hasLocalKeys)
+                            ApprovalBlock()
+                            if (hasLocalKeys) {
+                                // Full-bleed lazy list when the root skips
+                                // its scroll (the normal shell case);
+                                // legacy scrolled content otherwise.
+                                if (fullBleedList) ChatsSectionContent()
+                                else ChatsContent(listOnly = true)
                             }
                         }
-                        ApprovalUi.Loading -> {
-                            CircularProgressIndicator(modifier = Modifier.size(32.dp))
-                        }
-                        is ApprovalUi.Ready -> {
-                            val view = approvalState.view
-                            if (!view.selfActive) {
-                                Text(
-                                    text = APPROVAL_INACTIVE_MESSAGE,
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            } else if (view.pending.isEmpty()) {
-                                Text(
-                                    text = APPROVAL_NONE_MESSAGE,
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
+                        HomeSection.Detail -> {
+                            val detailId = detailConversationId
+                            if (hasLocalKeys && detailId != null) {
+                                // Full-bleed lazy detail when the root skips
+                                // its scroll (the normal shell case);
+                                // legacy scrolled detail otherwise.
+                                if (fullBleedList) DetailSectionContent(detailId)
+                                else DetailContent(detailId)
                             } else {
-                                view.pending.forEach { device ->
-                                    Text(
-                                        text = "Pending device (${device.deviceRole} · #${device.signalDeviceId})",
-                                        style = MaterialTheme.typography.bodyMedium
-                                    )
-                                    val busy = approvingId != null
-                                    Button(
-                                        onClick = { approve(device.deviceId) },
-                                        enabled = !busy,
-                                    ) {
-                                        Text(
-                                            if (approvingId == device.deviceId) {
-                                                "Approving…"
-                                            } else {
-                                                "Approve"
-                                            }
-                                        )
-                                    }
-                                }
-                            }
-                            TextButton(onClick = ::refreshApproval) {
-                                Text("Refresh")
+                                DeviceStatusHeader(
+                                    state.label,
+                                    state.codesAcknowledged,
+                                    hasLocalKeys,
+                                )
                             }
                         }
-                        is ApprovalUi.Failed -> {
-                            Text(
-                                text = approvalState.message,
-                                color = MaterialTheme.colorScheme.error
-                            )
-                            TextButton(onClick = ::refreshApproval) {
-                                Text("Retry")
-                            }
-                        }
-                        is ApprovalUi.Approved -> {
-                            Text(
-                                text = "Device approved (${approvalState.label})",
-                                style = MaterialTheme.typography.bodyMedium
-                            )
-                            TextButton(onClick = ::refreshApproval) {
-                                Text("Refresh")
-                            }
-                        }
-                    }
-                    // Slice 14 friends: session-level only (no device keys
-                    // needed), so visible in Done even on handle-less
-                    // installs. Accepting here unblocks the composer below.
-                    LaunchedEffect(Unit) {
-                        refreshRoster()
-                    }
-                    FriendsSection(
-                        friends = friends,
-                        incoming = incomingRequests,
-                        loadingRoster = loadingRoster,
-                        rosterError = rosterError,
-                        onRefreshRoster = ::refreshRoster,
-                        addUsername = addUsername,
-                        onAddUsernameChange = {
-                            addUsername = it
-                            addFriendError = null
-                            addFriendSuccess = null
-                        },
-                        sendingRequest = sendingFriendRequest,
-                        addFriendError = addFriendError,
-                        addFriendSuccess = addFriendSuccess,
-                        onSendRequest = ::sendFriendRequest,
-                        respondingRequestId = respondingRequestId,
-                        respondError = respondError,
-                        onAccept = { respondToRequest(it, accept = true) },
-                        onReject = { respondToRequest(it, accept = false) },
-                    )
-                    // Slice 11 messaging is available only with local
-                    // crypto handles. Handle-less ("Device bound") installs
-                    // stay fail-closed: no list, no composer, no sync.
-                    if (hasLocalKeys) {
-                        LaunchedEffect(Unit) {
-                            loadConversations()
-                        }
-
-                        @Composable
-                        fun MessageComposer() {
-                            ComposerUi(
-                                username = composerUsername,
-                                onUsernameChange = {
-                                    composerUsername = it
-                                    discoveredDevices = null
-                                    selectedDeviceId = null
-                                    directoryError = null
-                                },
-                                draft = composerDraft,
-                                onDraftChange = { composerDraft = it },
-                                devices = discoveredDevices,
-                                findingDevices = findingDevices,
-                                directoryError = directoryError,
-                                selectedDeviceId = selectedDeviceId,
-                                onFindDevices = ::findDevices,
-                                onSelectDevice = { selectedDeviceId = it },
-                                sending = sending,
-                                sendError = sendError,
-                                onSend = ::send,
-                            )
-                        }
-
-                        val openId = selectedConversationId
-                        if (openId == null) {
-                            ConversationListUi(
-                                conversations = conversations,
-                                loadError = conversationsLoadError,
-                                onRetryLoad = {
-                                    scope.launch { loadConversations() }
-                                },
-                                syncing = syncing,
-                                syncError = syncError,
-                                onSync = ::sync,
-                                onSelect = ::openConversation,
-                            )
-                            MessageComposer()
-                        } else {
-                            BackHandler {
-                                closeConversation()
-                            }
-                            ConversationDetailUi(
-                                peerLabel = detailPeer.ifEmpty { openId },
-                                messages = detailMessages,
-                                loadError = detailLoadError,
-                                onRetryLoad = {
-                                    scope.launch { loadDetail(openId) }
-                                },
-                                syncing = syncing,
-                                syncError = syncError,
-                                onBack = ::closeConversation,
-                                onSync = ::sync,
-                                composer = { MessageComposer() },
-                            )
-                        }
+                        HomeSection.Friends -> FriendsContent()
+                        HomeSection.Settings -> SettingsContent()
                     }
                 }
                 is EnrollUiState.Failed -> {
@@ -1379,8 +1735,13 @@ fun HomeScreen(
                 }
                 is EnrollUiState.Codes -> Unit // handled above
             }
-            TextButton(onClick = ::doLogout) {
-                Text("Log out")
+            // Slice B: logout lives in Settings once enrollment is Done;
+            // the Full (legacy) rendering and every pre-Done setup gate
+            // keep the bottom button so logout stays reachable.
+            if (section == HomeSection.Full || enrollState !is EnrollUiState.Done) {
+                TextButton(onClick = ::doLogout) {
+                    Text("Log out")
+                }
             }
         }
     }

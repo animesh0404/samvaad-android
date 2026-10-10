@@ -261,6 +261,16 @@ class SessionGateTest {
         }
         composeTestRule.waitUntil(30_000) {
             try {
+                composeTestRule.onNodeWithText("Signed in as alice").assertExists()
+                true
+            } catch (_: AssertionError) {
+                false
+            }
+        }
+        // Slice B: logout lives in the Settings destination.
+        composeTestRule.onNodeWithText("Settings").performClick()
+        composeTestRule.waitUntil(30_000) {
+            try {
                 composeTestRule.onNodeWithText("Log out").fetchSemanticsNode()
                 true
             } catch (_: AssertionError) {

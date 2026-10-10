@@ -23,6 +23,7 @@ import com.samvaad.android.crypto.AndroidKeystoreKeyProvider
 import com.samvaad.android.session.FileSessionStore
 import com.samvaad.android.session.SessionRefresher
 import com.samvaad.android.session.SessionStore
+import com.samvaad.android.ui.shell.SamvaadAppShell
 import com.samvaad.android.ui.theme.SamvaadTheme
 
 /**
@@ -95,7 +96,7 @@ fun SessionGate(
                     )
                 }
             }
-            is GateState.Home -> HomeScreen(
+            is GateState.Home -> SamvaadAppShell(
                 identifier = state.session.identifier,
                 session = state.session,
                 serverAddress = state.serverAddress,

@@ -5,17 +5,25 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import com.samvaad.android.enroll.RecipientDeviceRecord
+import com.samvaad.android.ui.theme.SamvaadDimens
+import com.samvaad.android.ui.theme.SamvaadShapes
+import com.samvaad.android.ui.theme.SamvaadSpacing
 
 /**
  * Slice 11 conversation/history presentation. Stateless renderers only:
@@ -137,6 +145,12 @@ fun ConversationDetailUi(
     onBack: () -> Unit,
     onSync: () -> Unit,
     composer: @Composable () -> Unit,
+    /**
+     * Slice B: the shell top bar owns back in external navigation, so
+     * the Detail destination hides this row-level button. Full (legacy)
+     * mode keeps it.
+     */
+    showBack: Boolean = true,
 ) {
     Column(
         modifier = Modifier.fillMaxWidth(),
@@ -147,8 +161,10 @@ fun ConversationDetailUi(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            TextButton(onClick = onBack) {
-                Text(BACK_LABEL)
+            if (showBack) {
+                TextButton(onClick = onBack) {
+                    Text(BACK_LABEL)
+                }
             }
             Text(
                 text = peerLabel,
@@ -236,9 +252,14 @@ fun ComposerUi(
     sendError: String?,
     onSend: () -> Unit,
 ) {
+    // Slice E visual redesign: same elements, same order, same strings,
+    // same guards. Fields go full width, spacing uses design tokens, and
+    // the draft + send pair sits in a tonal card that reads as one
+    // message field. The IME send action mirrors the Send button guard.
+    val canSend = selectedDeviceId != null && draft.isNotBlank() && !sending
     Column(
         modifier = Modifier.fillMaxWidth(),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(SamvaadSpacing.Small),
     ) {
         OutlinedTextField(
             value = username,
@@ -246,10 +267,12 @@ fun ComposerUi(
             label = { Text(USERNAME_LABEL) },
             singleLine = true,
             enabled = !sending && !findingDevices,
+            modifier = Modifier.fillMaxWidth(),
         )
         Button(
             onClick = onFindDevices,
             enabled = username.isNotBlank() && !sending && !findingDevices,
+            modifier = Modifier.heightIn(min = SamvaadDimens.MinTouchTarget),
         ) {
             Text(if (findingDevices) FINDING_DEVICES_LABEL else FIND_DEVICES_LABEL)
         }
@@ -275,6 +298,7 @@ fun ComposerUi(
                     Button(
                         onClick = { onSelectDevice(device.deviceId) },
                         enabled = !sending,
+                        modifier = Modifier.heightIn(min = SamvaadDimens.MinTouchTarget),
                     ) {
                         Text(
                             (if (selected) "✓ " else "") +
@@ -284,17 +308,37 @@ fun ComposerUi(
                 }
             }
         }
-        OutlinedTextField(
-            value = draft,
-            onValueChange = onDraftChange,
-            label = { Text(MESSAGE_LABEL) },
-            enabled = !sending,
-        )
-        Button(
-            onClick = onSend,
-            enabled = selectedDeviceId != null && draft.isNotBlank() && !sending,
+        Surface(
+            shape = SamvaadShapes.medium,
+            color = MaterialTheme.colorScheme.surfaceContainerLow,
+            contentColor = MaterialTheme.colorScheme.onSurface,
+            modifier = Modifier.fillMaxWidth(),
         ) {
-            Text(if (sending) SENDING_LABEL_BUTTON else SEND_LABEL)
+            Column(
+                verticalArrangement = Arrangement.spacedBy(SamvaadSpacing.Small),
+                modifier = Modifier.padding(SamvaadSpacing.Medium),
+            ) {
+                OutlinedTextField(
+                    value = draft,
+                    onValueChange = onDraftChange,
+                    label = { Text(MESSAGE_LABEL) },
+                    enabled = !sending,
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                    keyboardActions = KeyboardActions(
+                        onSend = { if (canSend) onSend() },
+                    ),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Button(
+                    onClick = onSend,
+                    enabled = canSend,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = SamvaadDimens.MinTouchTarget),
+                ) {
+                    Text(if (sending) SENDING_LABEL_BUTTON else SEND_LABEL)
+                }
+            }
         }
         sendError?.let { error ->
             Text(

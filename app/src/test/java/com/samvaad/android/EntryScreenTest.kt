@@ -98,8 +98,11 @@ class EntryScreenTest {
     fun entryFields_exist() {
         setEntryContent()
 
+        composeTestRule.onNodeWithText("Server address").performScrollTo()
         composeTestRule.onNodeWithText("Server address").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Username").performScrollTo()
         composeTestRule.onNodeWithText("Username").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Password").performScrollTo()
         composeTestRule.onNodeWithText("Password").assertIsDisplayed()
     }
 

@@ -4,19 +4,24 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -29,10 +34,18 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import com.samvaad.android.session.SessionRefresher
 import com.samvaad.android.session.SessionStore
+import com.samvaad.android.ui.ds.SamvaadTextField
+import com.samvaad.android.ui.ds.StatusCard
+import com.samvaad.android.ui.ds.StatusKind
+import com.samvaad.android.ui.shell.SamvaadAppShell
+import com.samvaad.android.ui.theme.SamvaadDimens
+import com.samvaad.android.ui.theme.SamvaadSpacing
 import com.samvaad.android.ui.theme.SamvaadTheme
 import java.io.IOException
 import java.net.MalformedURLException
@@ -97,6 +110,7 @@ fun SamvaadEntryScreen(
     var serverAddress by remember { mutableStateOf("") }
     var username by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
+    var passwordVisible by remember { mutableStateOf(false) }
     var loginState by remember(noticeMessage) {
         mutableStateOf<LoginUiState>(
             noticeMessage?.let(LoginUiState::Failed) ?: LoginUiState.Idle
@@ -160,7 +174,7 @@ fun SamvaadEntryScreen(
 
     val authenticated = loginState as? LoginUiState.Authenticated
     if (authenticated != null) {
-        HomeScreen(
+        SamvaadAppShell(
             identifier = authenticated.session.identifier,
             session = authenticated.session,
             serverAddress = authenticated.serverAddress,
@@ -176,76 +190,120 @@ fun SamvaadEntryScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding)
+                .consumeWindowInsets(innerPadding)
+                .imePadding()
                 .verticalScroll(rememberScrollState())
-                .padding(24.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp),
+                .padding(
+                    horizontal = SamvaadSpacing.XLarge,
+                    vertical = SamvaadSpacing.XLarge,
+                ),
+            verticalArrangement = Arrangement.spacedBy(
+                SamvaadSpacing.Large,
+                Alignment.CenterVertically,
+            ),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Image(
-                painter = painterResource(R.drawable.samvaad_logo),
-                contentDescription = "Samvaad logo",
-                modifier = Modifier.size(120.dp)
-            )
-            Text(
-                text = "Samvaad",
-                style = MaterialTheme.typography.headlineMedium
-            )
-            OutlinedTextField(
-                value = serverAddress,
-                onValueChange = { serverAddress = it },
-                label = { Text("Server address") },
-                singleLine = true,
-                enabled = !loading,
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
-                modifier = Modifier.fillMaxWidth()
-            )
-            OutlinedTextField(
-                value = username,
-                onValueChange = { username = it },
-                label = { Text("Username") },
-                singleLine = true,
-                enabled = !loading,
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
-                modifier = Modifier.fillMaxWidth()
-            )
-            OutlinedTextField(
-                value = password,
-                onValueChange = { password = it },
-                label = { Text("Password") },
-                singleLine = true,
-                enabled = !loading,
-                visualTransformation = PasswordVisualTransformation(),
-                keyboardOptions = KeyboardOptions(
-                    keyboardType = KeyboardType.Password,
-                    imeAction = ImeAction.Done
-                ),
-                modifier = Modifier.fillMaxWidth()
-            )
-            Button(
-                onClick = ::startLogin,
-                enabled = !loading,
+            Column(
+                modifier = Modifier
+                    // Slice H: widthIn FIRST — fillMaxWidth fixes
+                    // minWidth to the window, which would coerce the
+                    // cap back up and silently uncap wide windows.
+                    .widthIn(max = SamvaadDimens.MaxContentWidth)
+                    .fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(SamvaadSpacing.Large),
+                horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                if (loading) {
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(20.dp),
-                            strokeWidth = 2.dp
-                        )
+                Image(
+                    painter = painterResource(R.drawable.samvaad_logo),
+                    contentDescription = "Samvaad logo",
+                    modifier = Modifier.size(SamvaadDimens.BrandMarkSize)
+                )
+                Text(
+                    text = "Samvaad",
+                    style = MaterialTheme.typography.headlineLarge
+                )
+                Text(
+                    text = "Private messaging for you and your friends. " +
+                        "Sign in with your Samvaad server account.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center,
+                )
+                SamvaadTextField(
+                    value = serverAddress,
+                    onValueChange = { serverAddress = it },
+                    label = "Server address",
+                    enabled = !loading,
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
+                    supportingText = "Your Samvaad server address, starting with https://",
+                )
+                SamvaadTextField(
+                    value = username,
+                    onValueChange = { username = it },
+                    label = "Username",
+                    enabled = !loading,
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
+                )
+                SamvaadTextField(
+                    value = password,
+                    onValueChange = { password = it },
+                    label = "Password",
+                    enabled = !loading,
+                    visualTransformation = if (passwordVisible) {
+                        VisualTransformation.None
+                    } else {
+                        PasswordVisualTransformation()
+                    },
+                    trailingContent = {
+                        TextButton(
+                            onClick = { passwordVisible = !passwordVisible },
+                            enabled = !loading,
+                            // Slice H: meets the 48dp touch target; the
+                            // field itself is taller, so no growth.
+                            modifier = Modifier.heightIn(
+                                min = SamvaadDimens.MinTouchTarget,
+                            ),
+                        ) {
+                            Text(if (passwordVisible) "Hide" else "Show")
+                        }
+                    },
+                    keyboardOptions = KeyboardOptions(
+                        keyboardType = KeyboardType.Password,
+                        imeAction = ImeAction.Done
+                    ),
+                    keyboardActions = KeyboardActions(
+                        onDone = { startLogin() }
+                    ),
+                )
+                Button(
+                    onClick = ::startLogin,
+                    enabled = !loading,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = SamvaadDimens.ActionMinHeight),
+                ) {
+                    if (loading) {
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(SamvaadSpacing.Small),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(20.dp),
+                                strokeWidth = 2.dp
+                            )
+                            Text("Continue")
+                        }
+                    } else {
                         Text("Continue")
                     }
-                } else {
-                    Text("Continue")
                 }
-            }
-            val failed = loginState as? LoginUiState.Failed
-            if (failed != null) {
-                Text(
-                    text = failed.message,
-                    color = MaterialTheme.colorScheme.error
-                )
+                val failed = loginState as? LoginUiState.Failed
+                if (failed != null) {
+                    StatusCard(
+                        kind = StatusKind.Error,
+                        message = failed.message,
+                    )
+                }
             }
         }
     }

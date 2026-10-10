@@ -29,6 +29,14 @@ data class ConversationRow(
     val previewSequence: Long,
     /** True when an outbound row is not yet server-accepted. */
     val hasPending: Boolean,
+    /**
+     * Raw server timestamp of the latest row (`""` when the server has
+     * not accepted it yet). Presented through `formatServerTimestamp`;
+     * never parsed or persisted here.
+     */
+    val previewTimestamp: String,
+    /** True when the latest row is outbound (rendered with a "You:" prefix). */
+    val previewIsOutbound: Boolean,
 )
 
 /** One rendered message row. [text] is memory-only unsealed plaintext. */
@@ -40,6 +48,12 @@ data class MessageRow(
     val sequenceNumber: Long,
     /** "Sending…" for unaccepted outbound rows, else the server timestamp. */
     val meta: String,
+    /**
+     * Raw server timestamp of this row (`""` when the server has not
+     * accepted it yet). Presentation only: day separators and bubble
+     * captions derive from it without touching persistence.
+     */
+    val serverTimestamp: String,
 )
 
 /** Fixed placeholder when sealed content cannot be opened. Never logged. */
@@ -83,6 +97,8 @@ fun buildConversationList(
                 hasPending = rows.any {
                     it.direction == MessageDirection.OUT && it.sendState != SendState.SENT
                 },
+                previewTimestamp = latest.serverTimestamp,
+                previewIsOutbound = latest.direction == MessageDirection.OUT,
             )
         }
         .sortedByDescending { it.previewSequence }
@@ -116,6 +132,7 @@ fun mapMessageRow(
         text = text,
         sequenceNumber = entity.sequenceNumber,
         meta = meta,
+        serverTimestamp = entity.serverTimestamp,
     )
 }
 
